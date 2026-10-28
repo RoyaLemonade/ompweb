@@ -15,6 +15,7 @@ export function GET() {
     api: 1,
     capabilities: {
       heartbeatParam: true,
+      messageSearch: true,
     },
   });
 }
