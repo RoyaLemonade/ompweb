@@ -1438,8 +1438,15 @@ export function AppShell({ appName }: { appName: string }) {
         method: "POST",
       });
       const body = (await response.json().catch(() => ({}))) as { title?: string; error?: string; code?: string };
-      if (!response.ok || !body.title) {
+      if (!response.ok) {
         throw new Error(body.error || body.code ? formatApiError(body) : `HTTP ${response.status}`);
+      }
+      // A 200 without a title means another process owns the session and it has
+      // no stored title yet: a title is cosmetic, so this is a silent no-op, not
+      // the "HTTP 200" error a missing title used to produce.
+      if (!body.title) {
+        setAutoNameStatus({ kind: "idle" });
+        return;
       }
 
       const title = body.title.trim();

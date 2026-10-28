@@ -18,7 +18,13 @@ function newSessionErrorResponse(error: unknown) {
   }
   if (error instanceof WebRpcError || error instanceof RpcCommandError) {
     return NextResponse.json(
-      { error: error.message, code: error instanceof WebRpcError ? error.code : (error.code ?? "rpc_command_failed") },
+      {
+        error: error.message,
+        code: error instanceof WebRpcError ? error.code : (error.code ?? "rpc_command_failed"),
+        // `maybeStarted`/`abortUnconfirmed` must reach the client, exactly as on
+        // POST /api/agent/[id]: without them a timeout looks like "not sent".
+        ...(error instanceof WebRpcError ? error.details : undefined),
+      },
       { status: 400 },
     );
   }
@@ -83,6 +89,22 @@ export async function POST(req: Request) {
 
       return NextResponse.json({ success: true, sessionId: realSessionId, data: result });
     } catch (error) {
+      // A command timeout means omp is busy, not dead: the frame may already sit
+      // in the child's stdin and a run it started must survive. Same contract as
+      // POST /api/agent/[id]; the liveness watchdog alone may dispose the child.
+      // The body carries the real session id so a client that posted the prompt
+      // directly here can still poll and adopt the run `maybeStarted` announced.
+      if (error instanceof WebRpcError && error.code === "session_slow") {
+        return NextResponse.json(
+          {
+            error: error.message,
+            code: error.code,
+            sessionId: realSessionId,
+            ...error.details,
+          },
+          { status: 400 },
+        );
+      }
       // The child was spawned but the prompt never ran: without this cleanup a
       // failed set_model/set_thinking_level/prompt leaves an orphaned omp
       // process and a registry entry nobody will ever use.

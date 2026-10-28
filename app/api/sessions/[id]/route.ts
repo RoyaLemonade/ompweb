@@ -27,7 +27,8 @@ import {
 import { resolveSessionPathOr404 } from "@/lib/api-utils";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { sessionPathKey } from "@/lib/paths";
-import { clearExitedRpcSession, getRpcSession, WebRpcError } from "@/lib/rpc-manager";
+import { clearExitedRpcSession, getOwnChildPids, getRpcSession, isLocallyOwnedSession, isOwnCrashedSession, WebRpcError } from "@/lib/rpc-manager";
+import { detectSessionOwner, type SessionElsewhere } from "@/lib/session-owner";
 
 /** Stable, client-safe error body for catch-all handlers: details go to the
  *  server log only, never to the browser. */
@@ -240,7 +241,10 @@ export async function GET(
     // GET /api/agent/[id]) so the client's post-turn refresh is one request
     // instead of two. On a get_state failure the field is omitted entirely —
     // callers treat a missing `agent` as "fetch it separately".
-    let agent: { running: boolean; alive: boolean; state?: unknown } | undefined;
+    // `elsewhere` is always present when `agent` is: a client that just opened
+    // a foreign-owned session learns it from this one request, before it tries
+    // to send anything.
+    let agent: { running: boolean; alive: boolean; state?: unknown; elsewhere: SessionElsewhere | null } | undefined;
     if (includeState) {
       const rpc = getRpcSession(id);
       if (rpc?.isAlive()) {
@@ -248,11 +252,20 @@ export async function GET(
           // Same split as GET /api/agent/[id]: `running` is the run in flight,
           // `alive` the child (an idle wrapper is alive, not running).
           const state = await rpc.send({ type: "get_state" });
-          agent = { running: rpc.isRunning(), alive: true, state };
+          agent = { running: rpc.isRunning(), alive: true, state, elsewhere: null };
         } catch {
           // Leave agent unset; the session payload is still valid without it.
         }
       } else {
+        agent = {
+          running: false,
+          alive: false,
+          elsewhere: await detectSessionOwner(id, filePath, {
+            isLocal: isLocallyOwnedSession,
+            ownCrashed: isOwnCrashedSession,
+            excludePids: getOwnChildPids(),
+          }),
+        };
       }
     }
 

@@ -1713,5 +1713,16 @@
   "modelsConfig.accountApiKey": "APIキー",
   "modelsConfig.disconnectAccount": "{label} を切断",
   "modelsConfig.disconnectAccountTitle": "アカウントを切断しますか？",
-  "modelsConfig.disconnectAccountBody": "omp は {label} の保存済み資格情報を削除します。このプロバイダーの他のアカウントは接続されたままです。"
+  "modelsConfig.disconnectAccountBody": "omp は {label} の保存済み資格情報を削除します。このプロバイダーの他のアカウントは接続されたままです。",
+  "sessionOwnership.openElsewhere": "別の omp プロセスがこのチャットを所有しています ({source})。続けるにはターミナルまたは別の omp-web ウィンドウで開いてください。",
+  "sessionOwnership.bannerTitle": "このチャットは他の場所で実行されています。",
+  "sessionOwnership.bannerBody": "別の omp プロセス (別の omp-web ウィンドウまたはターミナル) がこの会話を所有しています。ここでは読み取り専用で追従しています。送信すると別のコピーで続行されます。",
+  "sessionOwnership.sendBlocked": "このチャットは別の omp プロセスが実行中です。コピーで続行するには「それでも送信」を選んでください。",
+  "sessionOwnership.sendAnyway": "それでも送信 (コピー)",
+  "sessionOwnership.sendAnywayConfirm": "書き込み時に omp はこの会話を新しいコピーへ移動するため、他のプロセスは元のファイルをそのまま保持します。あなたのメッセージと以降の返信はコピーに残ります。",
+  "sessionOwnership.commandBlocked": "このチャットは別の omp プロセスが実行中です。変更は行われませんでした。",
+  "sessionOwnership.copyNoticeTitle": "コピーで続行しました",
+  "sessionOwnership.copyNotice": "別の omp プロセスがこのチャットを所有していたため、メッセージはコピーで続行されました。",
+  "sessionOwnership.openOriginal": "元のチャットを開く",
+  "sessionOwnership.openCopy": "コピーを開く"
 }

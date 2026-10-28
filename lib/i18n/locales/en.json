@@ -1754,5 +1754,16 @@
   "modelsConfig.accountApiKey": "API key",
   "modelsConfig.disconnectAccount": "Disconnect {label}",
   "modelsConfig.disconnectAccountTitle": "Disconnect account?",
-  "modelsConfig.disconnectAccountBody": "omp will delete the stored credential for {label}. Other accounts for this provider stay connected."
+  "modelsConfig.disconnectAccountBody": "omp will delete the stored credential for {label}. Other accounts for this provider stay connected.",
+  "sessionOwnership.openElsewhere": "Another omp process owns this chat ({source}). Open it from a terminal or the other omp-web window to continue there.",
+  "sessionOwnership.bannerTitle": "This chat is running elsewhere.",
+  "sessionOwnership.bannerBody": "Another omp process holds this conversation (another omp-web window or a terminal). You are following it read-only; sending would continue in a separate copy.",
+  "sessionOwnership.sendBlocked": "This chat is being run by another omp process — send anyway to continue in a copy.",
+  "sessionOwnership.sendAnyway": "Send anyway (copy)",
+  "sessionOwnership.sendAnywayConfirm": "omp will move this conversation into a new copy when it writes, so the other process keeps the original untouched. Your message and the following replies live in the copy.",
+  "sessionOwnership.commandBlocked": "This chat is being run by another omp process — nothing was changed.",
+  "sessionOwnership.copyNoticeTitle": "Continued in a copy",
+  "sessionOwnership.copyNotice": "Another omp process owned this chat, so your message continued in a copy.",
+  "sessionOwnership.openOriginal": "Open original",
+  "sessionOwnership.openCopy": "Open copy"
 }

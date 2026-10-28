@@ -28,6 +28,7 @@ import {
   type AgentToolSessionOps,
 } from "./agent-tools";
 import { markShuttingDown, recordRunningSessions, RESUME_PROMPT, takeInterruptedSessions } from "./session-resume";
+import { detectSessionOwner, getElsewhereSessions, setElsewhereChangeNotifier, setElsewhereOwnershipContext, type ElsewhereSessionInfo } from "./session-owner";
 import { PRESET_FULL } from "./tool-presets";
 import { comparableProjectPath } from "./comparable-path";
 import { samePath } from "./paths";
@@ -458,6 +459,11 @@ export class AgentSessionWrapper {
   /** omp reported a `session-persistence` notice: its next identity change is
    * the same conversation moving to a sibling file, not a session switch. */
   private sessionMovePending = false;
+  /** When a prompt of our own was dispatched; a move right after it means we
+   *  collided with another writer (omp forked instead of taking the lease). */
+  private lastPromptAt = 0;
+  /** This wrapper already announced the current move as a contention copy. */
+  private movedByContention = false;
   private unsubscribeFrames: (() => void) | null = null;
   private readonly detectNotification = createNotificationDetector();
   /** Agent activity since the last `session_settled`: background work may still run after the turn ended. */
@@ -859,10 +865,14 @@ export class AgentSessionWrapper {
   /** Re-read identity after omp reported that it moved this session to a new file. */
   private async followSessionMove(): Promise<void> {
     this.sessionMovePending = true;
+    const fromId = this._sessionId;
+    const promptAt = this.lastPromptAt;
+    let movedTo: string | null = null;
     try {
       const state = await this.getStateWithTimeout();
       if (this._alive) {
         this.applyIdentity(state);
+        if (this._sessionId !== fromId) movedTo = this._sessionId;
       }
     } catch {
       // The next get_state-driven refresh still applies the pending move.
@@ -871,6 +881,16 @@ export class AgentSessionWrapper {
       // let it mask a later genuine session switch.
       if (this.sessionMovePending && this._alive) this.sessionMovePending = false;
       notifyRunningChange({ refreshSessionList: true });
+    }
+    // A move within one prompt ack window is the collision case: another omp
+    // process held the lease, so omp moved the conversation to a copy when our
+    // prompt was written. That must be visible, not look like a new chat.
+    if (movedTo && fromId && promptAt > 0 && Date.now() - promptAt <= PROMPT_ACK_TIMEOUT_MS && !this.movedByContention) {
+      this.movedByContention = true;
+      // Another omp process held the lease, so omp moved the conversation to a
+      // copy when our prompt was written. Both ids identify the pair for the
+      // clients (original ↔ copy); nothing else is needed here.
+      this.emit({ type: "session_contention_fork", fromId, toId: movedTo });
     }
   }
 
@@ -2066,6 +2086,8 @@ export class AgentSessionWrapper {
         if (!streamingBehavior) {
           this.responseObserved = false;
           this.responseRunActive = false;
+          this.lastPromptAt = Date.now();
+          this.movedByContention = false;
           if (!this.isRunning()) this.clearLiveSnapshots();
           this.streamSequence += 1;
           this.promptRunning = true;
@@ -2528,6 +2550,8 @@ export interface RunningSessionUpdate {
   ids: string[];
   runningSessions: RunningRpcSession[];
   exitedSessions: ExitedRpcSession[];
+  /** Sessions a foreign omp process/instance holds (never in `ids`). */
+  elsewhereSessions: ElsewhereSessionInfo[];
   refreshSessionList: boolean;
 }
 
@@ -2538,6 +2562,7 @@ declare global {
   var __ompRunningListeners: Set<(update: RunningSessionUpdate) => void> | undefined;
   var __ompHostToolListeners: Set<(call: CrossSessionHostToolCall) => void> | undefined;
   var __ompExitedSessions: Map<string, ExitedRpcSession> | undefined;
+  var __ompStartingSessions: Map<string, AgentSessionWrapper> | undefined;
 }
 
 function getExitedMap(): Map<string, ExitedRpcSession> {
@@ -2580,6 +2605,18 @@ function getLocks(): Map<string, Promise<{ session: AgentSessionWrapper; realSes
   return globalThis.__ompStartLocks;
 }
 
+/**
+ * Wrappers between spawning their child and their first successful handshake.
+ * They are not in the registry yet (a half-ready wrapper must never serve a
+ * command), but their omp child already names the session on its command line —
+ * a process scan that runs in this window must not report it as a foreign
+ * owner. Keys are the ids the caller asked for.
+ */
+function getStartingSessions(): Map<string, AgentSessionWrapper> {
+  if (!globalThis.__ompStartingSessions) globalThis.__ompStartingSessions = new Map();
+  return globalThis.__ompStartingSessions;
+}
+
 export function getRpcSession(sessionId: string): AgentSessionWrapper | undefined {
   return getRegistry().get(sessionId);
 }
@@ -2597,6 +2634,31 @@ export function getRunningRpcSessions(): RunningRpcSession[] {
 
 export function getRunningRpcSessionIds(): string[] {
   return getRunningRpcSessions().map((s) => s.id);
+}
+
+/** Sessions this process runs right now (a live wrapper owns them), including
+ *  a wrapper whose child is still in its startup handshake. */
+export function isLocallyOwnedSession(sessionId: string): boolean {
+  if (getRegistry().get(sessionId)?.isAlive() === true) return true;
+  return getStartingSessions().has(sessionId);
+}
+
+/** OS pids of every omp child this instance started — registry wrappers and
+ *  the ones still starting. Ownership detection must exclude all of them: a
+ *  child's command line keeps naming its session forever, which is exactly the
+ *  shape of a foreign owner. */
+export function getOwnChildPids(): number[] {
+  const pids = new Set<number>();
+  for (const wrapper of [...getRegistry().values(), ...getStartingSessions().values()]) {
+    if (wrapper.pid !== undefined) pids.add(wrapper.pid);
+  }
+  return [...pids];
+}
+
+/** Whether our own child for this session died (so a missing `session_exit`
+ *  is explained locally, not by a foreign writer). */
+export function isOwnCrashedSession(sessionId: string): boolean {
+  return getExitedMap().has(sessionId) && !getRegistry().get(sessionId)?.isAlive();
 }
 
 /** Stop all live omp children after an explicit runtime update. The browser will
@@ -2659,20 +2721,35 @@ let lastRunningSnapshot = "[[],[],[]]";
  * Recompute the running-session-id set and, when it changes, broadcast it.
  * A session file may first appear after its id starts running, so callers can
  * force one otherwise-identical update to refresh sidebar session metadata.
+ * Foreign ownership rides along in `elsewhereSessions` (but never in `ids`: the
+ * unread/notification logic keys off runs this instance actually started).
  */
 export function notifyRunningChange({ refreshSessionList = false }: { refreshSessionList?: boolean } = {}): void {
+  // The snapshot expires entries and re-checks foreign owners on its own timer;
+  // it must be able to broadcast that result without importing this module.
+  setElsewhereChangeNotifier(() => notifyRunningChange());
+  // The tick has no caller that could pass the ownership checks, so this module
+  // registers them: without them a chat this instance took over (our own child
+  // still names the original file) was re-detected as foreign on every tick.
+  setElsewhereOwnershipContext({
+    isLocal: isLocallyOwnedSession,
+    ownCrashed: isOwnCrashedSession,
+    excludePids: getOwnChildPids,
+  });
   const runningSessions = getRunningRpcSessions();
   const exitedSessions = getExitedRpcSessions();
+  const elsewhereSessions = getElsewhereSessions();
   const ids = runningSessions.map((s) => s.id);
   const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
   const snapshot = JSON.stringify([
     runningSessions.slice().sort(byId),
     exitedSessions.slice().sort(byId),
+    elsewhereSessions.slice().sort(byId),
   ]);
   if (snapshot === lastRunningSnapshot && !refreshSessionList) return;
   lastRunningSnapshot = snapshot;
   syncInterruptibleSessions();
-  const update: RunningSessionUpdate = { ids, runningSessions, exitedSessions, refreshSessionList };
+  const update: RunningSessionUpdate = { ids, runningSessions, exitedSessions, elsewhereSessions, refreshSessionList };
   for (const listener of getRunningListeners()) {
     try { listener(update); } catch { /* ignore listener errors */ }
   }
@@ -2697,6 +2774,13 @@ export async function resumeInterruptedSessions(): Promise<void> {
     try {
       const filePath = await resolveSessionPath(id);
       if (!filePath) return;
+      // Another omp (terminal, or an omp-web instance that took over) may hold
+      // the file now; a resume prompt would fork it into a copy. Skip instead.
+      const elsewhere = await detectSessionOwner(id, filePath, { excludePids: getOwnChildPids() });
+      if (elsewhere) {
+        console.warn(`[omp-web] not resuming session ${id}: it is being run by another omp process`);
+        return;
+      }
       const header = readSessionHeader(filePath);
       const { cwd } = resolveSpawnCwdResult(header?.cwd);
       const { session } = await startRpcSession(id, filePath, cwd, undefined, advisor, header?.cwd);
@@ -2898,6 +2982,11 @@ export async function startRpcSession(
       sessionFile ? sessionId : "",
     );
     holder.wrapper = created;
+    // The omp child exists from here on and its command line names the session
+    // it resumes; ownership detection must treat it as ours during the whole
+    // handshake (up to several seconds), or it reports our own spawn as a
+    // foreign owner and the UI shows "running elsewhere" for our own run.
+    getStartingSessions().set(sessionId, created);
     created.start();
     try {
       await created.waitUntilReady();
@@ -2945,6 +3034,10 @@ export async function startRpcSession(
     return { session: created, realSessionId };
   })().finally(() => {
     locks.delete(sessionId);
+    // The wrapper is registered by now (success) or disposed (failure); either
+    // way it is no longer "starting", and the start lock is already released so
+    // no replacement can race this delete.
+    getStartingSessions().delete(sessionId);
   });
 
   locks.set(sessionId, starting);

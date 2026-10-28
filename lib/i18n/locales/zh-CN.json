@@ -1713,5 +1713,16 @@
   "modelsConfig.accountApiKey": "API 密钥",
   "modelsConfig.disconnectAccount": "断开 {label}",
   "modelsConfig.disconnectAccountTitle": "断开账户？",
-  "modelsConfig.disconnectAccountBody": "omp 将删除 {label} 的已存储凭据。此提供商的其他账户保持连接。"
+  "modelsConfig.disconnectAccountBody": "omp 将删除 {label} 的已存储凭据。此提供商的其他账户保持连接。",
+  "sessionOwnership.openElsewhere": "另一个 omp 进程拥有此聊天 ({source})。请在终端或另一个 omp-web 窗口中继续。",
+  "sessionOwnership.bannerTitle": "此聊天正在别处运行。",
+  "sessionOwnership.bannerBody": "另一个 omp 进程 (另一个 omp-web 窗口或终端) 拥有此对话。你正在只读跟随；发送将在单独的副本中继续。",
+  "sessionOwnership.sendBlocked": "另一个 omp 进程正在运行此聊天 — 选择“仍然发送”以在副本中继续。",
+  "sessionOwnership.sendAnyway": "仍然发送 (副本)",
+  "sessionOwnership.sendAnywayConfirm": "写入时 omp 会将此对话移动到新的副本，另一个进程保留原始文件。你的消息和后续回复位于副本中。",
+  "sessionOwnership.commandBlocked": "另一个 omp 进程正在运行此聊天 — 未做任何更改。",
+  "sessionOwnership.copyNoticeTitle": "已在副本中继续",
+  "sessionOwnership.copyNotice": "另一个 omp 进程拥有此聊天，因此你的消息在副本中继续。",
+  "sessionOwnership.openOriginal": "打开原始聊天",
+  "sessionOwnership.openCopy": "打开副本"
 }

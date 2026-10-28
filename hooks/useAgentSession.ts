@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, useMemo, useReducer } from "react";
+import { Fragment, createElement, useState, useCallback, useRef, useEffect, useMemo, useReducer } from "react";
 import type {
   AgentMessage,
   ExitedRpcSession,
@@ -8,6 +8,7 @@ import type {
   ExtensionStatusItem,
   ExtensionWidgetItem,
   SessionContext,
+  SessionElsewhere,
   SessionInfo,
   SessionTreeNode,
   ToolResultMessage,
@@ -27,6 +28,7 @@ import { createReconcileGuard, type ReconcileGuard } from "@/lib/reconcile-guard
 import { getToolNamesForPreset, type ToolPreset } from "@/lib/tool-presets";
 import { getPreferredToolPreset, setPreferredToolPreset } from "@/lib/tool-preset-preference";
 import { toast } from "@/components/ui/toast";
+import Link from "next/link";
 import { expandWebSlashCommand } from "@/lib/web-slash-commands";
 import { validateOutgoingPrompt } from "@/lib/image-attachments";
 import { createActiveGoal, parseActiveGoal, type ActiveGoal, type ActivePlan } from "@/lib/web-mode-state";
@@ -282,6 +284,21 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   streamStateRef.current = streamState;
   const [agentRunning, setAgentRunning] = useState(false);
   const [bashRunning, setBashRunning] = useState(false);
+  // Another omp process (another omp-web instance, a terminal) holds this
+  // session's file. omp moves the conversation to a copy on our first write, so
+  // the composer blocks until the user explicitly sends anyway.
+  const [foreignRun, setForeignRun] = useState<SessionElsewhere | null>(null);
+  const foreignRunRef = useRef<SessionElsewhere | null>(null);
+  const applyForeignRun = useCallback((next: SessionElsewhere | null) => {
+    const previous = foreignRunRef.current;
+    if (previous === next) return;
+    if (previous && next
+      && previous.kind === next.kind && previous.source === next.source
+      && previous.running === next.running && previous.active === next.active
+      && previous.lastActivityAt === next.lastActivityAt) return;
+    foreignRunRef.current = next;
+    setForeignRun(next);
+  }, []);
   const [pendingBash, setPendingBash] = useState<{ command: string; excludeFromContext: boolean } | null>(null);
   // False once this hook instance unmounts: background loops (prompt/bash
   // settlement polling) must not keep firing on a dead instance.
@@ -859,8 +876,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/state`);
       if (!res.ok) return;
-      const agentState = await res.json() as { running: boolean; alive?: boolean; state?: AgentStateResponse };
+      const agentState = await res.json() as { running: boolean; alive?: boolean; state?: AgentStateResponse; elsewhere?: SessionElsewhere | null };
       if (!hookAliveRef.current || sessionIdRef.current !== sid) return;
+      applyForeignRun(agentState.alive ? null : agentState.elsewhere ?? null);
       applySkillDiagnosticsSnapshot(skillDiagnosticsRevision, agentState.state?.skillDiagnostics);
       const applied = applyAuthoritativeModel(toThinkingModelMeta(agentState.state?.model), token);
       if (!applied) return; // stale snapshot — drop its thinking level too
@@ -887,7 +905,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } catch {
       // Best effort; the next loadSession/reconcile re-syncs.
     }
-  }, [applyAuthoritativeModel, applySkillDiagnosticsSnapshot, beginAuthoritativeModelSync]);
+  }, [applyAuthoritativeModel, applySkillDiagnosticsSnapshot, beginAuthoritativeModelSync, applyForeignRun]);
 
   // omp answered a state read with 503 `session_slow`: the child is alive, but
   // its event loop is blocked and `get_state` timed out. A run it still reports
@@ -990,7 +1008,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           throw new Error(`HTTP ${stateRes.status}`);
         }
         slowStateAnswersRef.current = null;
-        const agentState = await stateRes.json() as { running: boolean; alive?: boolean; state?: AgentStateResponse; exited?: ExitedRpcSession };
+        const agentState = await stateRes.json() as { running: boolean; alive?: boolean; state?: AgentStateResponse; exited?: ExitedRpcSession; elsewhere?: SessionElsewhere | null };
         if (!hookAliveRef.current) return null;
         if (sessionIdRef.current !== sid) {
           if (showLoading) setLoading(false);
@@ -1009,6 +1027,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         // runs is never resumed by this tab, and the composer must say so.
         // `alive` (the child exists), not `running` (a turn is in flight): an
         // idle wrapper of ours still owns the session.
+        applyForeignRun(agentState.alive ? null : agentState.elsewhere ?? null);
         applySkillDiagnosticsSnapshot(skillDiagnosticsRevision, liveState?.skillDiagnostics);
         const modelApplied = applyAuthoritativeModel(toThinkingModelMeta(liveState?.model), token);
         if (liveState) {
@@ -1057,7 +1076,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // Ensure the flag is cleared even if the pre-state early-return path was taken
       if (showLoading && includeState && !messagesLoaded) initialHydrationPendingRef.current = false;
     }
-  }, [catchUp, refreshSubagentHistory, applyAuthoritativeModel, beginAuthoritativeModelSync, applyQueueStateSnapshot, applySkillDiagnosticsSnapshot, markSessionAliveStateUnknown]);
+  }, [catchUp, refreshSubagentHistory, applyAuthoritativeModel, beginAuthoritativeModelSync, applyQueueStateSnapshot, applySkillDiagnosticsSnapshot, applyForeignRun, markSessionAliveStateUnknown]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null, includePreCompaction = false): Promise<boolean> => {
     const seq = ++contextRequestSeqRef.current;
@@ -1228,8 +1247,23 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const sid = sessionIdRef.current;
       if (!sid || !sessionIds.includes(sid) || editInFlightRef.current?.sessionId === sid) return;
       void catchUp.request();
+      // A write is also the moment a foreign owner can appear (a terminal omp
+      // or another instance started on this chat). This bus is the only channel
+      // that announces it while the tab already has the chat open, so re-read
+      // ownership here — the state route is read-only and never spawns. Our own
+      // run never coexists with a foreign owner, so skip it then.
+      if (agentRunningRef.current || bashRunningRef.current) return;
+      void fetch(`/api/sessions/${encodeURIComponent(sid)}/state`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { alive?: boolean; elsewhere?: SessionElsewhere | null } | null) => {
+          if (!hookAliveRef.current || sessionIdRef.current !== sid || !data) return;
+          // `alive` (our child exists), not `running` (a turn is in flight):
+          // an idle wrapper still owns the session and is no foreign owner.
+          applyForeignRun(data.alive ? null : data.elsewhere ?? null);
+        })
+        .catch(() => {});
     });
-  }, [catchUp]);
+  }, [catchUp, applyForeignRun]);
 
   // Reconnect actions captured after their definitions (host-tool and URI
   // registrations are per-wrapper and are not persisted by omp, and the
@@ -1936,12 +1970,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         return;
       }
       slowStateAnswersRef.current = null;
-      const data = await res.json() as { running?: boolean; alive?: boolean; state?: AgentStateResponse };
+      const data = await res.json() as { running?: boolean; alive?: boolean; state?: AgentStateResponse; elsewhere?: SessionElsewhere | null };
       // A slow response can straddle a run boundary (previous run finished
       // and the user already started the next one while this request was in
       // flight) — everything in it is stale, drop it.
       if (!hookAliveRef.current || sessionIdRef.current !== sid || promptRunIdRef.current !== runId
         || responseRunVersionRef.current !== responseVersion) return;
+      applyForeignRun(data.alive ? null : data.elsewhere ?? null);
       const state = data.state;
       applySkillDiagnosticsSnapshot(skillDiagnosticsRevision, state?.skillDiagnostics);
       if (!promptDispatchPendingRef.current && state?.responseObserved) runHadContentRef.current = true;
@@ -1983,7 +2018,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         void reconcileAgentState(sid);
       }
     }
-  }, [applyQueueStateSnapshot, applySkillDiagnosticsSnapshot, finishPromptWithoutStream, refreshSubagentRoster, markSessionAliveStateUnknown]);
+  }, [applyQueueStateSnapshot, applySkillDiagnosticsSnapshot, finishPromptWithoutStream, refreshSubagentRoster, applyForeignRun, markSessionAliveStateUnknown]);
 
   // Recovery net for missed SSE events: while the agent is running, verify
   // against the server periodically and whenever the tab returns to the
@@ -2040,6 +2075,27 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return () => clearInterval(timer);
   }, [externalRunActive, catchUp]);
 
+  // Another process owns the session: re-check ownership at the transcript
+  // poll cadence so the banner clears the moment that process exits (a
+  // terminal `omp`, or another instance finishing). The state route is
+  // read-only and never spawns, so this cannot fork anything.
+  useEffect(() => {
+    if (!foreignRun?.active) return;
+    const timer = setInterval(() => {
+      const sid = sessionIdRef.current;
+      if (!hookAliveRef.current || !sid) return;
+      void fetch(`/api/sessions/${encodeURIComponent(sid)}/state`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { alive?: boolean; elsewhere?: SessionElsewhere | null } | null) => {
+          if (!hookAliveRef.current || sessionIdRef.current !== sid || !data) return;
+          // `alive` (our child exists), not `running` (a turn is in flight):
+          // an idle wrapper still owns the session and is no foreign owner.
+          applyForeignRun(data.alive ? null : data.elsewhere ?? null);
+        })
+        .catch(() => {});
+    }, EXTERNAL_RUN_POLL_MS);
+    return () => clearInterval(timer);
+  }, [foreignRun?.active, applyForeignRun]);
 
   // Sample omp's own tokensPerSecond (get_state) at a gauge-friendly cadence
   // while a run is active; the 15s reconcile above is too slow for a gauge.
@@ -2331,6 +2387,46 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             .catch(() => {});
         }
         onAgentEnd?.();
+        break;
+      }
+      case "session_contention_fork": {
+        // omp moved this conversation to a copy because another process held
+        // the file: a forced send raced the owner, or a stale second writer won.
+        // The copy carries the user's text, so report it instead of letting the
+        // sidebar show an unexplained new chat. Both links matter: the original
+        // is read-only from here on, the copy is where the reply continues.
+        const fromId = typeof event.fromId === "string" ? event.fromId : null;
+        const toId = typeof event.toId === "string" ? event.toId : null;
+        const linkStyle = { color: "var(--accent)", textDecoration: "underline" };
+        // This hook is a .ts module (no JSX): build the description with
+        // createElement, as the toast tests do.
+        toast.info(
+          translate("sessionOwnership.copyNoticeTitle"),
+          createElement(
+            Fragment,
+            null,
+            translate("sessionOwnership.copyNotice"),
+            fromId ? " " : null,
+            fromId
+              ? createElement(
+                  Link,
+                  { href: `/?session=${encodeURIComponent(fromId)}`, style: linkStyle },
+                  translate("sessionOwnership.openOriginal"),
+                )
+              : null,
+            toId ? " · " : null,
+            toId
+              ? createElement(
+                  Link,
+                  { href: `/?session=${encodeURIComponent(toId)}`, style: linkStyle },
+                  translate("sessionOwnership.openCopy"),
+                )
+              : null,
+          ),
+          { timeout: 0 },
+        );
+        // The copy is ours now; the original may still be foreign.
+        applyForeignRun(null);
         break;
       }
       case "prompt_result":
@@ -2785,7 +2881,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         handleExtensionUiRequest(event as unknown as IncomingExtensionUiRequest);
         break;
     }
-}, [addNotice, catchUp, eventCoalescer, clearLiveToolResults, clearTerminalReconcileTimer, finishPromptWithoutStream, handleExtensionUiRequest, handleHostToolCall, handleHostUriRequest, loadSession, reloadActiveSessionHistory, mergeSubagents, onAgentEnd, reconcileAgentState, refreshLiveModelState, resetSubagentActivityState, applyAuthoritativeModel, applySkillDiagnosticsSnapshot, beginAuthoritativeModelSync, setLiveToolResult, surfaceQuotaOnStream, updateQueuedMessages, applyQueueStateSnapshot]);
+}, [addNotice, catchUp, eventCoalescer, clearLiveToolResults, clearTerminalReconcileTimer, finishPromptWithoutStream, handleExtensionUiRequest, handleHostToolCall, handleHostUriRequest, loadSession, reloadActiveSessionHistory, mergeSubagents, onAgentEnd, reconcileAgentState, refreshLiveModelState, resetSubagentActivityState, applyAuthoritativeModel, applySkillDiagnosticsSnapshot, beginAuthoritativeModelSync, setLiveToolResult, surfaceQuotaOnStream, updateQueuedMessages, applyQueueStateSnapshot, applyForeignRun]);
   handleAgentEventRef.current = handleAgentEvent;
   syncActionsRef.current = {
     metadata: (context, version, hasLive = liveModelMeta !== null || currentModelOverride !== null) => {
@@ -2881,11 +2977,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     return snapshot.entryIds;
   }, []);
 
-  const handleSend = useCallback(async (message: string, images?: AttachedImage[]): Promise<PromptSubmissionResult> => {
+  const handleSend = useCallback(async (
+    message: string,
+    images?: AttachedImage[],
+    options: { force?: boolean } = {},
+  ): Promise<PromptSubmissionResult> => {
     const trimmedMessage = message.trim();
     if (!trimmedMessage && !images?.length) return { status: "rejected" };
     if (agentRunningRef.current || bashRunningRef.current || editInFlightRef.current) return { status: "rejected" };
     if (initialHydrationPendingRef.current) return { status: "rejected" };
+    // Another omp process holds the file: sending would fork the conversation
+    // into a copy on omp's first write. The composer banners this and offers an
+    // explicit "send anyway"; anything that bypasses it stops here.
+    if (foreignRunRef.current && !options.force) {
+      addNotice({ type: "warning", message: translate("sessionOwnership.sendBlocked") });
+      return { status: "rejected" };
+    }
     const isSlashCommandPrompt = !images?.length && trimmedMessage.startsWith("/");
     // omp runs TUI-only commands such as `/guided-goal` nowhere but its own
     // terminal, so over RPC the text is sent as an ordinary prompt and the turn
@@ -2996,14 +3103,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             type: "prompt",
             message,
             ...(piImages?.length ? { images: piImages } : {}),
-          }));
+          }, { force: options.force }));
         }
       } else if (session) {
         const sid = sessionIdRef.current ?? session.id;
         sentSessionId = sid;
         // The event route is observer-only. Start or resume the web-owned RPC
         // wrapper with a supported command before opening the SSE connection.
-        await sendAgentCommand(sid, { type: "get_state" });
+        await sendAgentCommand(sid, { type: "get_state" }, { force: options.force });
         await ensureEventsConnected(sid);
         void refreshSubagentRoster(sid);
         void registerHostTools(sid);
@@ -3016,7 +3123,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           type: "prompt",
           message,
           ...(piImages?.length ? { images: piImages } : {}),
-        }));
+        }, { force: options.force }));
       }
       if (promptRunIdRef.current === promptRunId) promptDispatchPendingRef.current = false;
       if (queuedBehindShell) {
@@ -3045,6 +3152,24 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } catch (e) {
       if (promptRunIdRef.current !== promptRunId) return { status: "superseded" };
       promptDispatchPendingRef.current = false;
+      if (e instanceof AgentCommandError && e.code === "session_running_elsewhere") {
+        // Another omp owns the session file. Nothing was started, nothing was
+        // dropped: roll the optimistic turn back, hand the text to the composer
+        // and let the banner offer the explicit "send anyway (copy)".
+        applyForeignRun(e.elsewhere ?? { kind: "terminal", source: "transcript", running: false, active: true });
+        setOptimisticUserMessage(null);
+        agentRunningRef.current = false;
+        catchUp.invalidate();
+        eventCoalescer.reset();
+        setAgentRunning(false);
+        setAgentPhase(null);
+        clearLiveToolResults();
+        lastQuotaErrorRef.current = null;
+        lastRunErrorRef.current = null;
+        slashCommandRunRef.current = false;
+        dispatch({ type: "end" });
+        return { status: "rejected", recoveryKey };
+      }
       console.error("Failed to send message:", e);
       // The prompt frame may already sit in omp's stdin (ack timed out while
       // omp was busy). Not an undo: keep the optimistic turn, keep reporting
@@ -3078,7 +3203,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       dispatch({ type: "end" });
       return { status: "rejected", recoveryKey };
     }
-  }, [catchUp, eventCoalescer, isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, onSessionCreated, waitForPromptSettlement, addNotice, refreshSubagentRoster, registerHostTools, registerHostUriSchemes, clearLiveToolResults, clearTerminalReconcileTimer, snapshotRunEntries]);
+  }, [catchUp, eventCoalescer, isNew, newSessionCwd, newSessionModel, session, ensureNewSession, ensureEventsConnected, promoteNewSession, onSessionCreated, waitForPromptSettlement, addNotice, refreshSubagentRoster, registerHostTools, registerHostUriSchemes, clearLiveToolResults, clearTerminalReconcileTimer, snapshotRunEntries, applyForeignRun]);
 
   /** Abort the running agent and send the message as a fresh prompt
    * (abort_and_prompt). Only valid mid-run; the old turn's agent_end is
@@ -3447,6 +3572,19 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [addNotice, catchUp, connectEvents, isNew, onSessionMoved, opts.chatInputRef, reloadActiveSessionHistory]);
 
+  /**
+   * A settings or fork command hit the ownership gate: another omp process owns
+   * the file, so the route refused to spawn (409 `session_running_elsewhere`).
+   * Show the banner the prompt path uses instead of the raw English server text,
+   * and tell the user nothing changed. Returns true when it handled the error.
+   */
+  const reportForeignCommandError = useCallback((error: unknown): boolean => {
+    if (!(error instanceof AgentCommandError) || error.code !== "session_running_elsewhere") return false;
+    applyForeignRun(error.elsewhere ?? { kind: "terminal", source: "transcript", running: false, active: true });
+    addNotice({ type: "warning", message: translate("sessionOwnership.commandBlocked") });
+    return true;
+  }, [addNotice, applyForeignRun]);
+
   // editPrompt: omp's `branch` drops the chosen user prompt from the fork and
   // returns its text — put it in the fork's composer (edit-and-resend).
   const handleFork = useCallback(async (entryId: string, editPrompt: boolean) => {
@@ -3478,12 +3616,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
     } catch (e) {
       // The fork spawns a resume child, so the ownership gate applies here too.
-      console.error("Fork failed:", e);
+      if (!reportForeignCommandError(e)) console.error("Fork failed:", e);
     } finally {
       forkInFlightRef.current = false;
       setForkingEntryId(null);
     }
-  }, [advisorEnabled, onSessionForked]);
+  }, [advisorEnabled, onSessionForked, reportForeignCommandError]);
 
   const handleLeafChange = useCallback(async (leafId: string | null) => {
     if (bashRunningRef.current || agentRunningRef.current || editInFlightRef.current) return;
@@ -3513,6 +3651,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setCurrentModelOverride({ provider, modelId });
       await refreshLiveModelState(sid);
     } catch (e) {
+      if (reportForeignCommandError(e)) return;
       // Previously this was console-only, so a cold-start failure (e.g. an
       // unrestorable saved model, #277) left the composer showing the old
       // model with no explanation. The override above is only set on success,
@@ -3522,7 +3661,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       modelCommandPendingRef.current -= 1;
     }
-  }, [isNew, setNewSessionModel, refreshLiveModelState, addNotice]);
+  }, [isNew, setNewSessionModel, refreshLiveModelState, addNotice, reportForeignCommandError]);
 
   const handleFastModeChange = useCallback(async (enabled: boolean) => {
     // A brand-new session has no runtime yet: the model picker updates local
@@ -3536,10 +3675,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setFastModeActive(result?.active);
       void refreshLiveModelState(sid);
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to change Fast mode:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice, ensureNewSession, refreshLiveModelState]);
+  }, [addNotice, ensureNewSession, refreshLiveModelState, reportForeignCommandError]);
 
   const handleSlowModeChange = useCallback(async (enabled: boolean) => {
     // Before omp runs, the toggle comes from the catalog: spawn it like Fast.
@@ -3550,10 +3690,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setSlowModeEnabled(result?.enabled ?? enabled);
       void refreshLiveModelState(sid);
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to change Slow mode:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice, ensureNewSession, refreshLiveModelState]);
+  }, [addNotice, ensureNewSession, refreshLiveModelState, reportForeignCommandError]);
 
   /** Toggle automatic retry for transient model failures. */
   const handleAutoRetryChange = useCallback(async (enabled: boolean) => {
@@ -3564,9 +3705,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       await sendAgentCommand(sid, { type: "set_auto_retry", enabled });
     } catch (error) {
       setAutoRetryEnabled((current) => (current === enabled ? !enabled : current));
+      if (reportForeignCommandError(error)) return;
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice]);
+  }, [addNotice, reportForeignCommandError]);
 
   const setSkillStartupDiagnostics = useCallback(async (enabled: boolean): Promise<SkillDiagnosticsSnapshot> => {
     if (typeof enabled !== "boolean") throw new Error("Skill startup diagnostics enabled must be a boolean");
@@ -3597,10 +3739,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       await sendAgentCommand(sid, { type: "set_interrupt_mode", mode });
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to change interrupt mode:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice]);
+  }, [addNotice, reportForeignCommandError]);
 
   /** Toggle automatic context compaction on the live session. */
   const handleAutoCompactionChange = useCallback(async (enabled: boolean) => {
@@ -3610,10 +3753,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       await sendAgentCommand(sid, { type: "set_auto_compaction", enabled });
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to change auto-compaction:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice]);
+  }, [addNotice, reportForeignCommandError]);
 
   /** Change how queued steering messages are delivered (all at once / one at a time). */
   const handleSteeringModeChange = useCallback(async (mode: "all" | "one-at-a-time") => {
@@ -3623,10 +3767,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       await sendAgentCommand(sid, { type: "set_steering_mode", mode });
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to change steering mode:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice]);
+  }, [addNotice, reportForeignCommandError]);
 
   /** Change how queued follow-up messages are delivered. */
   const handleFollowUpModeChange = useCallback(async (mode: "all" | "one-at-a-time") => {
@@ -3636,10 +3781,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       await sendAgentCommand(sid, { type: "set_follow_up_mode", mode });
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to change follow-up mode:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice]);
+  }, [addNotice, reportForeignCommandError]);
 
   /** Cycle to the next available model (⌘/Ctrl+Alt+M). */
   const handleCycleModel = useCallback(async () => {
@@ -3651,12 +3797,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       await sendAgentCommand(sid, { type: "cycle_model" });
       await refreshLiveModelState(sid);
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to cycle model:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
       modelCommandPendingRef.current -= 1;
     }
-  }, [addNotice, refreshLiveModelState]);
+  }, [addNotice, refreshLiveModelState, reportForeignCommandError]);
 
   /** Cycle to the next thinking level (⌘/Ctrl+Alt+T). */
   const handleCycleThinkingLevel = useCallback(async () => {
@@ -3668,12 +3815,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       await sendAgentCommand(sid, { type: "cycle_thinking_level" });
       await refreshLiveModelState(sid);
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to cycle thinking level:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     } finally {
       modelCommandPendingRef.current -= 1;
     }
-  }, [addNotice, refreshLiveModelState]);
+  }, [addNotice, refreshLiveModelState, reportForeignCommandError]);
 
   /** Stop an in-progress automatic retry from the retry banner. */
   const handleAbortRetry = useCallback(async () => {
@@ -3683,10 +3831,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     try {
       await sendAgentCommand(sid, { type: "abort_retry" });
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       console.error("Failed to abort retry:", error);
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice]);
+  }, [addNotice, reportForeignCommandError]);
 
   const handleHandoff = useCallback(async () => {
     const sid = sessionIdRef.current;
@@ -3696,9 +3845,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       await loadSession(sid, true);
       void refreshLiveModelState(sid);
     } catch (error) {
+      if (reportForeignCommandError(error)) return;
       addNotice({ type: "error", message: error instanceof Error ? error.message : String(error) });
     }
-  }, [addNotice, loadSession, refreshLiveModelState]);
+  }, [addNotice, loadSession, refreshLiveModelState, reportForeignCommandError]);
 
   const handleCompact = useCallback(async () => {
     const sid = sessionIdRef.current;
@@ -3713,13 +3863,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       await loadSession(sid, true);
       void refreshLiveModelState(sid);
     } catch (e) {
+      if (reportForeignCommandError(e)) return;
       setCompactError(e instanceof Error ? e.message : String(e));
       setCompactResult(null);
     } finally {
       isCompactingRef.current = false;
       setIsCompacting(false);
     }
-  }, [isCompacting, loadSession, refreshLiveModelState]);
+  }, [isCompacting, loadSession, refreshLiveModelState, reportForeignCommandError]);
 
   const loadModels = useCallback(async (signal?: AbortSignal) => {
     setModelsLoading(true);
@@ -4045,11 +4196,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       await sendAgentCommand(sid, { type: "set_thinking_level", level });
       await refreshLiveModelState(sid);
     } catch (e) {
+      if (reportForeignCommandError(e)) return;
       console.error("Failed to set thinking level:", e);
     } finally {
       modelCommandPendingRef.current -= 1;
     }
-  }, [refreshLiveModelState]);
+  }, [refreshLiveModelState, reportForeignCommandError]);
 
   const handleToolPresetChange = useCallback(async (preset: ToolPreset) => {
     setToolPresetState(preset);
@@ -4380,6 +4532,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // True while a run this UI does not own looks active from the transcript
     // tail; drives the live-tail rendering and the bounded sync poll.
     externalRunActive,
+    // Another omp process owns this session: composer banner + blocked send.
+    foreignRun,
     liveToolResults,
     // Subscriptions
     handleAgentEventRef,

@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useRef, useState } from "react";
-import type { AgentMessage, ExitedRpcSession, ManagedProject, ProjectLaunchConfig, SessionInfo } from "@/lib/types";
+import type { AgentMessage, ElsewhereSessionInfo, ExitedRpcSession, ManagedProject, ProjectLaunchConfig, SessionInfo } from "@/lib/types";
 import { formatExitedSessionNotice, useI18n } from "@/lib/i18n";
 import { formatApiError } from "@/lib/i18n/api-error";
 import { ChevronDown, ChevronRight, Folder, GitBranch, MoreHorizontal, Pin } from "lucide-react";
@@ -17,6 +17,7 @@ import {
   type SessionTreeNode,
 } from "./SessionSidebar-helpers";
 import {
+  ElsewhereSessionIndicator,
   ExitedSessionIndicator,
   RecentlyCompletedIndicator,
   RunningSessionIndicator,
@@ -44,6 +45,8 @@ interface ProjectRowProps {
   hiddenCount: number;
   selectedSessionId: string | null;
   runningSessionIds: Set<string>;
+  /** Sessions another omp process holds, keyed by id (badge only). */
+  runningElsewhere: Map<string, ElsewhereSessionInfo>;
   unreadSessionIds: Set<string>;
   recentlyCompletedIds?: Set<string>;
   exitedSessions: Map<string, ExitedRpcSession>;
@@ -78,6 +81,7 @@ function ProjectRow({
   hiddenCount,
   selectedSessionId,
   runningSessionIds,
+  runningElsewhere,
   unreadSessionIds,
   recentlyCompletedIds,
   exitedSessions,
@@ -400,6 +404,7 @@ function ProjectRow({
                   node={node}
                   selectedSessionId={selectedSessionId}
                   runningSessionIds={runningSessionIds}
+                  runningElsewhere={runningElsewhere}
                   unreadSessionIds={unreadSessionIds}
                   exitedSessions={exitedSessions}
                   recentlyCompletedIds={recentlyCompletedIds}
@@ -451,6 +456,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
   node,
   selectedSessionId,
   runningSessionIds,
+  runningElsewhere,
   unreadSessionIds,
   exitedSessions,
   recentlyCompletedIds,
@@ -463,6 +469,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
   node: SessionTreeNode;
   selectedSessionId: string | null;
   runningSessionIds: Set<string>;
+  runningElsewhere: Map<string, ElsewhereSessionInfo>;
   unreadSessionIds: Set<string>;
   exitedSessions: Map<string, ExitedRpcSession>;
   recentlyCompletedIds?: Set<string>;
@@ -480,6 +487,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
   // check then never re-renders unless this row's flags actually changed.
   const isSelected = sessionId === selectedSessionId;
   const isRunning = runningSessionIds.has(sessionId);
+  const elsewhere = runningElsewhere.get(sessionId);
   const isUnread = unreadSessionIds.has(sessionId);
   const isRecentlyCompleted = !isRunning && (recentlyCompletedIds?.has(sessionId) ?? false);
   const exited = exitedSessions.get(sessionId);
@@ -514,6 +522,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
           session={node.session}
           isSelected={isSelected}
           isRunning={isRunning}
+          elsewhere={elsewhere}
           isUnread={isUnread}
           exited={exited}
           isRecentlyCompleted={isRecentlyCompleted}
@@ -535,6 +544,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
               node={child}
               selectedSessionId={selectedSessionId}
               runningSessionIds={runningSessionIds}
+              runningElsewhere={runningElsewhere}
               unreadSessionIds={unreadSessionIds}
               exitedSessions={exitedSessions}
               recentlyCompletedIds={recentlyCompletedIds}
@@ -565,6 +575,12 @@ const SessionTreeItem = memo(function SessionTreeItem({
     const id = prev.node.session.id;
     if ((prev.recentlyCompletedIds?.has(id) ?? false) !== (next.recentlyCompletedIds?.has(id) ?? false)) return false;
   }
+  if (prev.runningElsewhere !== next.runningElsewhere) {
+    const id = prev.node.session.id;
+    const before = prev.runningElsewhere.get(id);
+    const after = next.runningElsewhere.get(id);
+    if (before !== after) return false;
+  }
   if (prev.unreadSessionIds !== next.unreadSessionIds) {
     const id = prev.node.session.id;
     if (prev.unreadSessionIds.has(id) !== next.unreadSessionIds.has(id)) return false;
@@ -580,6 +596,7 @@ const SessionItem = memo(function SessionItem({
   session,
   isSelected,
   isRunning,
+  elsewhere,
   isUnread,
   exited,
   isRecentlyCompleted,
@@ -595,6 +612,8 @@ const SessionItem = memo(function SessionItem({
   session: SessionInfo;
   isSelected: boolean;
   isRunning?: boolean;
+  /** Another omp process holds this session (badge + tooltip). */
+  elsewhere?: ElsewhereSessionInfo;
   isUnread?: boolean;
   exited?: ExitedRpcSession;
   isRecentlyCompleted?: boolean;
@@ -767,14 +786,16 @@ const SessionItem = memo(function SessionItem({
           {session.worktreeBranch && <span title={t("sessionSidebar.worktreeTitle", { path: session.cwd })} style={{ display: "flex", alignItems: "center", gap: 3, maxWidth: 56, minWidth: 0, overflow: "hidden", color: "var(--text-dim)", fontSize: 10, flexShrink: 1 }}><GitBranch size={10} strokeWidth={2.4} aria-hidden="true" /><span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.worktreeBranch}</span></span>}
           {hasChildren && <button className="session-item-icon-button" onClick={(event) => { event.stopPropagation(); onToggleCollapse?.(); }} title={collapsed ? t("sessionSidebar.expandForks") : t("sessionSidebar.collapseForks")} aria-label={collapsed ? t("sessionSidebar.expandForks") : t("sessionSidebar.collapseForks")} aria-expanded={!collapsed} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, padding: 0, flexShrink: 0, border: "none", background: "none", color: "var(--text-dim)", cursor: "pointer", transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform var(--dur-fast) var(--ease-out-warm)" }}><ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" /></button>}
           <div style={{ display: "flex", alignItems: "center", gap: SIDEBAR_STATUS_GAP, flexShrink: 0 }}>
-            {(isRunning || exited || isRecentlyCompleted || isUnread) && (
+            {(isRunning || exited || isRecentlyCompleted || isUnread || elsewhere) && (
               <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: SIDEBAR_STATUS_SLOT, height: SIDEBAR_STATUS_SLOT, flexShrink: 0 }}>
                 {isRunning
                   ? <RunningSessionIndicator size={12} />
-                  : exited
-                    ? <ExitedSessionIndicator title={exitTitle} size={12} />
-                    : isRecentlyCompleted
-                      ? <RecentlyCompletedIndicator size={12} />
+                  : elsewhere
+                    ? <ElsewhereSessionIndicator title={t("sessionOwnership.openElsewhere", { source: elsewhere.source })} size={12} />
+                    : exited
+                      ? <ExitedSessionIndicator title={exitTitle} size={12} />
+                      : isRecentlyCompleted
+                        ? <RecentlyCompletedIndicator size={12} />
                       : <UnreadSessionIndicator size={11} />}
               </span>
             )}

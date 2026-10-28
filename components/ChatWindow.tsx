@@ -532,6 +532,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     isAutoModelSelection,
     agentPhase, activeGoal, activePlan,
     liveToolResults,
+    foreignRun,
     subagents, subagentEvents, subagentTranscriptVersions, activeSubagentCount, currentTodoPhase, todoPhases,
     isNew,
     sessionIdRef, messagesEndRef, scrollContainerRef,
@@ -1071,6 +1072,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
       ref={composerRef}
       sessionInfoContainer={sessionInfoContainer}
       onSend={handleSend}
+      foreignRun={foreignRun}
       onPredictWord={handlePredictWord}
       onPredictWordFeedback={handlePredictWordFeedback}
       onAbort={handleAbort}

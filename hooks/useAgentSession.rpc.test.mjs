@@ -131,6 +131,7 @@ async function fetchStub(url, init = {}) {
       runningSessionIds: world.runningSessionIds,
       runningSessions: world.runningSessionIds.map((id) => ({ id, cwd: "/workspace" })),
       exitedSessions: [],
+      elsewhereSessions: [],
     });
   }
   if ((m = u.match(/\/api\/sessions\/([^/?#]+)\/state/))) {
