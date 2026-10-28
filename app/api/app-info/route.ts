@@ -14,6 +14,9 @@ export function GET() {
     version: packageJson.version,
     api: 1,
     capabilities: {
+      notificationDialogs: true,
+      notificationAnswer: true,
+      notificationDismiss: true,
       heartbeatParam: true,
     },
   });
