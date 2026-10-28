@@ -13,5 +13,8 @@ export function GET() {
     name: "ompweb",
     version: packageJson.version,
     api: 1,
+    capabilities: {
+      heartbeatParam: true,
+    },
   });
 }
