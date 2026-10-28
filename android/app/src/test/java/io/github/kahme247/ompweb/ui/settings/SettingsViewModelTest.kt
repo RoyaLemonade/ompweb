@@ -289,7 +289,7 @@ class SettingsViewModelTest {
 
         // Change server: the activity-scoped view model survives the route
         // change, so the origin is the signal that everything is stale.
-        prefs.setOrigin("http://10.0.0.2:30177") // leak-gate:allow ip-private-range
+        prefs.setOrigin("http://10.0.0.2:30177")
 
         waitFor("banner cleared") { viewModel.updateNotice.value == null }
         waitFor("usage cleared") { viewModel.providerUsageState.value.snapshot == null }

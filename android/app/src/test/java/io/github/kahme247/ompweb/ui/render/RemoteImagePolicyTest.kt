@@ -28,8 +28,8 @@ class RemoteImagePolicyTest {
         val tracker = imageLoadDecision("https://tracker.example/p?u=x", base)
         assertEquals(ImageLoadDecision.External("tracker.example"), tracker)
 
-        val lan = imageLoadDecision("http://192.168.1.1/setup.cgi?reboot=1", base) // leak-gate:allow ip-private-range
-        assertEquals(ImageLoadDecision.External("192.168.1.1"), lan) // leak-gate:allow ip-private-range
+        val lan = imageLoadDecision("http://192.168.1.1/setup.cgi?reboot=1", base)
+        assertEquals(ImageLoadDecision.External("192.168.1.1"), lan)
     }
 
     @Test

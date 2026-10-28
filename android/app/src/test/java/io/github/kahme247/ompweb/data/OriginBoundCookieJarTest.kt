@@ -12,7 +12,7 @@ class OriginBoundCookieJarTest {
 
     private val origin = "http://100.64.0.10:30177/api/sessions".toHttpUrl()
     private val otherPort = "http://100.64.0.10:30176/api/sessions".toHttpUrl()
-    private val otherHost = "http://100.64.0.11:30177/api/sessions".toHttpUrl() // leak-gate:allow ip-private-range
+    private val otherHost = "http://100.64.0.11:30177/api/sessions".toHttpUrl()
 
     private fun jar(
         configured: HttpUrl? = origin,

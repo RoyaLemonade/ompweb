@@ -246,7 +246,7 @@ class AndroidUpdateTest {
         )
         assertTrue(
             installable.copy(
-                apkUrl = "http://192.168.1.5:30180/ompweb-1.0.1.apk", // leak-gate:allow ip-private-range
+                apkUrl = "http://192.168.1.5:30180/ompweb-1.0.1.apk",
             ).canInstall,
         )
     }
@@ -269,11 +269,11 @@ class AndroidUpdateTest {
 
     @Test
     fun `the feed may name an absolute APK url inside a private network`() {
-        val body = feedBody(apkUrl = "http://192.168.1.5:30180/ompweb-1.0.1.apk") // leak-gate:allow ip-private-range
+        val body = feedBody(apkUrl = "http://192.168.1.5:30180/ompweb-1.0.1.apk")
 
         val feed = (parseAndroidUpdateFeed(body, FEED_URL) as AndroidUpdateFeedResult.Parsed).feed
 
-        assertEquals("http://192.168.1.5:30180/ompweb-1.0.1.apk", feed.apkUrl) // leak-gate:allow ip-private-range
+        assertEquals("http://192.168.1.5:30180/ompweb-1.0.1.apk", feed.apkUrl)
     }
 
     @Test

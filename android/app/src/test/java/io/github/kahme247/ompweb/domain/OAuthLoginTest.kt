@@ -113,7 +113,7 @@ class OAuthLoginTest {
         assertTrue(isLoopbackHost("LOCALHOST"))
         assertTrue(isLoopbackHost("auth.localhost"))
         assertTrue(isLoopbackHost("127.0.0.1"))
-        assertTrue(isLoopbackHost("127.1.2.3")) // leak-gate:allow ip-private-range
+        assertTrue(isLoopbackHost("127.1.2.3"))
         assertTrue(isLoopbackHost("0.0.0.0"))
         assertTrue(isLoopbackHost("::1"))
         assertTrue(isLoopbackHost("[::1]"))
@@ -122,7 +122,7 @@ class OAuthLoginTest {
         assertFalse(isLoopbackHost("127.evil.com"))
         assertFalse(isLoopbackHost("127.0.0.256"))
         assertFalse(isLoopbackHost("128.0.0.1"))
-        assertFalse(isLoopbackHost("10.0.0.1")) // leak-gate:allow ip-private-range
+        assertFalse(isLoopbackHost("10.0.0.1"))
         assertFalse(isLoopbackHost("localhost.evil.com"))
         assertFalse(isLoopbackHost(""))
     }

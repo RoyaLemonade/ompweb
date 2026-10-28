@@ -72,7 +72,7 @@ class ShellScreensScreenshotsTest : ScreenshotTest() {
     @Test
     fun password() = composeRule.verifyScreenshotMatrix("shell-password") {
         PasswordScreen(
-            origin = ServerAddress("http", "192.168.1.20", 30177), // leak-gate:allow ip-private-range
+            origin = ServerAddress("http", "192.168.1.20", 30177),
             error = PasswordError.WrongPassword,
             signingIn = false,
             onSubmit = {},
@@ -91,7 +91,7 @@ class ShellScreensScreenshotsTest : ScreenshotTest() {
                 viewModel = viewModel,
                 onAccepted = { _, _ -> },
                 onTooOld = { _, _ -> },
-                initialAddress = ServerAddress("http", "192.168.1.20", 30177), // leak-gate:allow ip-private-range
+                initialAddress = ServerAddress("http", "192.168.1.20", 30177),
                 initialResult = ProbeResult.REACHABLE,
             )
         }

@@ -91,8 +91,8 @@ class HttpPolicyInterceptorTest {
 
     @Test
     fun `only loopback, private, link-local and CGNAT peers count as private`() {
-        for (allowed in listOf("127.0.0.1", "10.1.2.3", "172.16.5.4", "172.31.255.254", "192.168.178.20", // leak-gate:allow ip-private-range
-            "169.254.10.1", "100.64.0.1", "100.127.255.254", "::1", "fd00::1", "fe80::1")) { // leak-gate:allow ip-private-range
+        for (allowed in listOf("127.0.0.1", "10.1.2.3", "172.16.5.4", "172.31.255.254", "192.168.178.20",
+            "169.254.10.1", "100.64.0.1", "100.127.255.254", "::1", "fd00::1", "fe80::1")) {
             assertTrue(allowed, HttpPolicyInterceptor.isPrivatePeer(InetAddress.getByName(allowed)))
         }
         for (public in listOf("8.8.8.8", "192.0.2.1", "172.32.0.1", "100.128.0.1", "100.63.255.255",

@@ -55,8 +55,8 @@ class ServerAddressTest {
 
     @Test
     fun `full urls keep their scheme`() {
-        assertEquals("http", valid("http://192.168.1.20:8080").scheme) // leak-gate:allow ip-private-range
-        assertEquals(8080, valid("http://192.168.1.20:8080").port) // leak-gate:allow ip-private-range
+        assertEquals("http", valid("http://192.168.1.20:8080").scheme)
+        assertEquals(8080, valid("http://192.168.1.20:8080").port)
         assertEquals("https", valid("https://example.com").scheme)
         assertEquals(30177, valid("https://example.com").port)
         assertEquals("http", valid("http://localhost:30177").scheme)
@@ -65,7 +65,7 @@ class ServerAddressTest {
 
     @Test
     fun `private ipv4 ranges allow http`() {
-        listOf("10.0.0.5", "172.16.4.4", "172.31.255.254", "192.168.178.20", "169.254.10.10", "127.0.0.1", "100.64.0.1", "100.127.255.254") // leak-gate:allow ip-private-range
+        listOf("10.0.0.5", "172.16.4.4", "172.31.255.254", "192.168.178.20", "169.254.10.10", "127.0.0.1", "100.64.0.1", "100.127.255.254")
             .forEach { ip ->
                 val address = valid(ip)
                 assertEquals("http expected for $ip", "http", address.scheme)
@@ -111,7 +111,7 @@ class ServerAddressTest {
 
     @Test
     fun `one trailing slash is the copied root path and is accepted`() {
-        assertEquals("http://192.168.178.20:30177", valid("http://192.168.178.20:30177/").origin) // leak-gate:allow ip-private-range
+        assertEquals("http://192.168.178.20:30177", valid("http://192.168.178.20:30177/").origin)
         assertEquals("https://example.com:30177", valid("https://example.com/").origin)
         assertEquals("http://localhost:30177", valid("localhost:30177/").origin)
         assertTrue(invalid("example.com/path/").contains("path"))
