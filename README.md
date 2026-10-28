@@ -385,7 +385,7 @@ With nginx, send the secret only to the address ranges you trust:
 # http {} context
 geo $ompweb_trusted {
     default       0;
-    10.0.0.0/8    1;
+    10.0.0.0/16   1;
 }
 include /etc/nginx/ompweb-auth.conf;  # the map written above
 
@@ -428,7 +428,7 @@ addresses you list in `set_real_ip_from`:
   geo $realip_remote_addr $ompweb_peer_allowed {
       default          0;
       173.245.48.0/20  1;  # ...every Cloudflare range
-      10.0.0.0/8       1;
+      10.0.0.0/16      1;
   }
   # in the server block
   if ($ompweb_peer_allowed = 0) { return 403; }
