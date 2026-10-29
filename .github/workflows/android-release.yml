@@ -25,6 +25,17 @@ on:
 permissions:
   contents: read
 
+env:
+  # The certificate this repository's users verify against (docs/android/README.md).
+  # A different keystore must not sign a release silently; rotate this value
+  # together with the published docs. The build job compares the APK against it
+  # before staging, the publish job again before the upload — one constant for
+  # both, so the two checks cannot drift apart.
+  RELEASE_CERT_SHA256: d73354b52dc7c3f0c74623c439ddb7b52e252811c6e6b5f851c9d04b7015fc87
+  # The build-tools the release pipeline pins: `aapt2` and `apksigner` are taken
+  # from exactly this directory instead of "latest found under build-tools".
+  RELEASE_BUILD_TOOLS: "37.0.0"
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -94,8 +105,17 @@ jobs:
             echo "::error::$GITHUB_REF_NAME is not an android-v<version> tag"
             exit 1
           fi
-          aapt2="$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f | sort -V | tail -1)"
-          test -n "$aapt2"
+          # The tag string is attacker-controlled by anyone who can push a tag,
+          # and it ends up in a file name, a release body and a URL: accept only
+          # a plain dotted version, never a path or shell metacharacter.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$GITHUB_REF_NAME is not an android-v<major>.<minor>.<patch> tag"
+            exit 1
+          fi
+          # The exact build-tools the workflow installs, not whatever another
+          # SDK package left behind in the runner image.
+          aapt2="$ANDROID_HOME/build-tools/$RELEASE_BUILD_TOOLS/aapt2"
+          test -x "$aapt2"
           apk_version="$("$aapt2" dump badging "$apk" |
             sed -n "s/^package:.* versionName='\([^']*\)'.*/\1/p")"
           if [ "$apk_version" != "$version" ]; then
@@ -111,13 +131,12 @@ jobs:
           sha_file="$asset.sha256"
           cp "$apk" "$asset"
 
-          apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)"
+          apksigner="$ANDROID_HOME/build-tools/$RELEASE_BUILD_TOOLS/apksigner"
+          test -x "$apksigner"
           certs="$("$apksigner" verify --print-certs "$asset")"
           printf '%s\n' "$certs"
-          # The certificate this repository's users verify against (docs/
-          # android/README.md). A different keystore must not sign a release
-          # silently; rotate this value together with the published docs.
-          expected_cert_sha256="d73354b52dc7c3f0c74623c439ddb7b52e252811c6e6b5f851c9d04b7015fc87"
+          expected_cert_sha256="$RELEASE_CERT_SHA256"
+          test -n "$expected_cert_sha256"
           case "$certs" in
             *"SHA-256 digest: $expected_cert_sha256"*) ;;
             *)
@@ -208,17 +227,65 @@ jobs:
           name: android-release
           path: dist
 
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+
+      # The same build-tools the build job used: `aapt2` and `apksigner` must be
+      # the pinned ones, not whatever the runner image happens to ship.
+      - name: Install the SDK tools the verification needs
+        run: sdkmanager "build-tools;$RELEASE_BUILD_TOOLS"
+
       - name: Resolve the staged release files
         id: staged
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#android-v}"
+          # Same validation as the build job: the tag reaches a file name here.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$GITHUB_REF_NAME is not an android-v<major>.<minor>.<patch> tag"
+            exit 1
+          fi
           asset="dist/ompweb-$version.apk"
           test -f "$asset"
           test -f "$asset.sha256"
           test -f dist/release-notes.md
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
           echo "sha_file=$asset.sha256" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Re-verify the staged APK
+        env:
+          ASSET: ${{ steps.staged.outputs.asset }}
+          VERSION: ${{ steps.staged.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The artifact travelled through storage between the two jobs. Publish
+          # nothing unless this job can re-derive the claims the build made:
+          # checksum, versionName and signing certificate.
+          recorded="$(cut -d' ' -f1 < "$ASSET.sha256")"
+          actual="$(sha256sum "$ASSET" | cut -d' ' -f1)"
+          if [ -z "$recorded" ] || [ "$recorded" != "$actual" ]; then
+            echo "::error::The staged APK does not match its recorded SHA-256"
+            exit 1
+          fi
+          aapt2="$ANDROID_HOME/build-tools/$RELEASE_BUILD_TOOLS/aapt2"
+          apksigner="$ANDROID_HOME/build-tools/$RELEASE_BUILD_TOOLS/apksigner"
+          test -x "$aapt2"
+          test -x "$apksigner"
+          apk_version="$("$aapt2" dump badging "$ASSET" |
+            sed -n "s/^package:.* versionName='\([^']*\)'.*/\1/p")"
+          if [ "$apk_version" != "$VERSION" ]; then
+            echo "::error::The staged APK reports versionName '$apk_version', expected '$VERSION'"
+            exit 1
+          fi
+          certs="$("$apksigner" verify --print-certs "$ASSET")"
+          case "$certs" in
+            *"SHA-256 digest: $RELEASE_CERT_SHA256"*) ;;
+            *)
+              echo "::error::The staged APK is not signed with the expected release certificate"
+              exit 1
+              ;;
+          esac
+          echo "staged APK verified: versionName $apk_version, SHA-256 $actual"
 
       - name: Upload the release APK
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
