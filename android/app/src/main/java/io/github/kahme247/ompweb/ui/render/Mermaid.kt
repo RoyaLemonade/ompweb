@@ -256,7 +256,11 @@ private fun MermaidWebView(
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
                         request: WebResourceRequest,
-                    ): Boolean = request.url.host != "appassets.androidplatform.net"
+                    ): Boolean = !allowsMermaidNavigation(
+                        scheme = request.url.scheme,
+                        host = request.url.host,
+                        path = request.url.path,
+                    )
 
                     override fun onRenderProcessGone(
                         view: WebView,
@@ -297,7 +301,7 @@ private fun MermaidWebView(
                 )
 
                 loadDataWithBaseURL(
-                    "https://appassets.androidplatform.net/assets/",
+                    "https://$ASSET_HOST/assets/",
                     mermaidHtml(code, dark = dark, backgroundArgb = backgroundArgb),
                     "text/html",
                     "UTF-8",
@@ -310,6 +314,23 @@ private fun MermaidWebView(
         )
     }
 }
+
+/**
+ * The origin the bundled assets are served from: `WebViewAssetLoader` answers
+ * `https://appassets.androidplatform.net/assets/...` from APK assets, so the
+ * document never needs a real network origin.
+ */
+private const val ASSET_HOST = "appassets.androidplatform.net"
+
+/**
+ * Whether a navigation may replace the rendered document. Only the bundled
+ * asset origin under `/assets/` qualifies: a diagram can carry a link, and
+ * anything else — a `data:`/`about:` load, the asset host with another path, a
+ * foreign origin — is blocked instead of being handed to the WebView. The
+ * loader only answers `/assets/`, so this adds nothing it would serve anyway.
+ */
+internal fun allowsMermaidNavigation(scheme: String?, host: String?, path: String?): Boolean =
+    scheme == "https" && host == ASSET_HOST && path.orEmpty().startsWith("/assets/")
 
 private fun mermaidHtml(code: String, dark: Boolean, backgroundArgb: Int): String {
     val theme = if (dark) "dark" else "default"

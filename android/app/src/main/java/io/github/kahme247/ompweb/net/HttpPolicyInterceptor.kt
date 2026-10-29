@@ -71,7 +71,10 @@ class HttpPolicyInterceptor(
             builder: OkHttpClient.Builder,
             allowCrossOriginRedirects: Boolean = false,
         ): OkHttpClient.Builder = builder
-            .eventListener(PlainHttpPolicyListener())
+            // A factory, not one shared instance: OkHttp keeps it for the life
+            // of the client, and a listener that ever gains a field must not be
+            // shared between concurrent calls.
+            .eventListenerFactory { PlainHttpPolicyListener() }
             .addInterceptor(HttpPolicyInterceptor(allowCrossOriginRedirects))
             .addNetworkInterceptor(HttpPolicyInterceptor(allowCrossOriginRedirects))
 
