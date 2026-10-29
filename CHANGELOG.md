@@ -8,7 +8,7 @@ All notable changes to **omp-web** (`@kahme247/ompweb`) are documented in this f
 
 ### Added
 
-- **A handshake for native clients.** `GET /api/app-info` answers with the package name, version, API level and which server-side capabilities exist. It carries no configuration and no credentials (it sits behind the normal auth gate), and it lets a client tell "not an ompweb server" from "server too old" from "OK" instead of probing endpoints. A native client can also ask for its own keep-alive interval with `GET /api/events?heartbeat=<seconds>` (15-110 s; any other value keeps the 30 s default). The interval belongs to that connection only, so the browser's shared stream is unchanged, and a phone's radio can sleep for the whole idle interval.
+- **A handshake for native clients.** `GET /api/app-info` answers with the app name `ompweb` (not the npm package name `@kahme247/ompweb`), version, API level and which server-side capabilities exist. It carries no configuration and no credentials (it sits behind the normal auth gate), and it lets a client tell "not an ompweb server" from "server too old" from "OK" instead of probing endpoints. A native client can also ask for its own keep-alive interval with `GET /api/events?heartbeat=<seconds>` (15-110 s; any other value keeps the 30 s default). The interval belongs to that connection only, so the browser's shared stream is unchanged, and a phone's radio can sleep for the whole idle interval.
 
 ### Fixes & Improvements
 
