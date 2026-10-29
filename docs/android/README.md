@@ -8,9 +8,9 @@ sessions (pin the ones you use most to the top of the list), the live chat, the
 composer with slash commands and dictation, files, Git and worktrees,
 notifications with inline replies, and all settings.
 
-The current release is **ompweb 1.0.17** (`versionCode` 10017). `applicationId`
-`io.github.kahme247.ompweb`. It is distributed as an APK on GitHub Releases;
-there is no Play Store listing.
+The `applicationId` is `io.github.kahme247.ompweb`. The app is distributed as an
+APK on GitHub Releases; there is no Play Store listing. The newest release
+there names the current version, its `versionCode`, the APK and its SHA-256.
 
 ---
 
@@ -39,8 +39,8 @@ network (loopback, RFC 1918, `100.64.0.0/10` for Tailscale, link-local,
 1. Open the release page:
    <https://github.com/kahme247/ompweb/releases> and pick the newest
    `android-v*` release.
-2. Download `ompweb-1.0.17.apk` and, to verify it, its companion
-   `ompweb-1.0.17.apk.sha256`.
+2. Download `ompweb-<version>.apk` and, to verify it, its companion
+   `ompweb-<version>.apk.sha256`.
 3. Open the file on the phone. Android asks once whether the app that opens it
    (Files, Chrome, …) may install unknown apps: allow it.
 4. Confirm the install. Signed updates install over the previous version; the
@@ -156,8 +156,9 @@ Every release publishes the SHA-256 of the APK as
 them before installing:
 
 ```sh
-# V is the release you downloaded, for example V=1.0.17
-V=1.0.17
+# V is the version of the release you downloaded (the android-v* tag without
+# its "android-v" prefix)
+V=<version>
 
 # With the published checksum file (Linux / macOS; both files in one folder)
 sha256sum -c ompweb-$V.apk.sha256
@@ -178,7 +179,7 @@ Get-FileHash .\ompweb-$V.apk -Algorithm SHA256
 With Android SDK build-tools installed:
 
 ```sh
-apksigner verify --print-certs ompweb-1.0.17.apk
+apksigner verify --print-certs ompweb-<version>.apk
 ```
 
 An APK whose certificate differs was not built by this project: do not install
@@ -273,6 +274,11 @@ tagging:
   (which would make the in-app updater offer the same release forever).
 - Add `docs/android/RELEASE_NOTES_<version>.md`. A missing file fails the
   build; the workflow never publishes another version's notes.
+- The READMEs carry no version, APK file name, size or checksum: the version,
+  the assets and their digests live in the release body that the workflow
+  builds from the release notes. A release therefore needs no README edit —
+  keep it that way (the stable signing-certificate fingerprint above is the
+  one deliberate exception).
 - Repository secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
   `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
 - The `android-release` environment (Settings → Environments) must exist with
@@ -292,5 +298,6 @@ tagging:
 ## More documentation
 
 - [`protocol.md`](protocol.md) — the RPC/frame contract the chat implements.
-- [`RELEASE_NOTES_1.0.17.md`](RELEASE_NOTES_1.0.17.md) — the current release
-  notes.
+- Release notes live next to this file as `RELEASE_NOTES_<version>.md` (and in
+  the GitHub release body of the matching `android-v<version>` tag). This page
+  names no version, so it needs no edit per release.
