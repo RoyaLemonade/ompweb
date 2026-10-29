@@ -738,7 +738,6 @@
   "errors.session_not_found": "Session not found",
   "errors.session_restarting": "This session is restarting — retry in a moment.",
   "errors.session_slow": "The agent is busy and did not answer in time. It is still running — try again in a moment.",
-  "errors.session_busy": "Too many commands are in flight for this session. Try again in a moment.",
   "errors.skill_install_failed": "Install failed",
   "errors.skill_not_installed": "Installed skill not found",
   "errors.skill_update_unsupported": "This skill cannot be updated automatically",

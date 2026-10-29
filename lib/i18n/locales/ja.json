@@ -721,7 +721,6 @@
   "errors.session_not_found": "セッションが見つかりません",
   "errors.session_restarting": "このセッションは再起動中です。しばらくしてから再試行してください。",
   "errors.session_slow": "エージェントは処理中で時間内に応答しませんでした。実行は続いています。しばらくしてから再試行してください。",
-  "errors.session_busy": "このセッションでは同時に実行中のコマンドが多すぎます。しばらくしてから再試行してください。",
   "errors.skill_install_failed": "インストールに失敗しました",
   "errors.skill_not_installed": "インストール済みのスキルが見つかりません",
   "errors.skill_update_unsupported": "このスキルは自動更新できません",

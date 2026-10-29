@@ -33,7 +33,9 @@ export async function GET(
             code: "session_slow",
             ...error.details,
             running: rpc.isRunning(),
-            alive: true,
+            // The timeout behind this 503 may have disposed a stalled child;
+            // `alive` is the child, so read it after the catch.
+            alive: rpc.isAlive(),
             silentForMs: rpc.silentForMs(),
           }, { status: 503 });
         }

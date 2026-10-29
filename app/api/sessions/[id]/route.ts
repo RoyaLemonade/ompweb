@@ -239,7 +239,8 @@ export async function GET(
     // ?includeState=1 inlines the wrapper's live agent state (same shape as
     // GET /api/agent/[id]) so the client's post-turn refresh is one request
     // instead of two. On a get_state failure the field is omitted entirely —
-    // callers treat a missing `agent` as "fetch it separately".
+    // callers treat a missing `agent` as "fetch it separately"; a child that is
+    // gone answers `{ running: false, alive: false }` like the other routes.
     let agent: { running: boolean; alive: boolean; state?: unknown } | undefined;
     if (includeState) {
       const rpc = getRpcSession(id);
@@ -253,6 +254,8 @@ export async function GET(
           // Leave agent unset; the session payload is still valid without it.
         }
       } else {
+        // Same shape as GET /api/agent/[id]: a dead/absent child is not a run.
+        agent = { running: false, alive: false };
       }
     }
 
