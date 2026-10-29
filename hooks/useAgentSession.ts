@@ -502,7 +502,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const initialScrollDoneRef = useRef(false);
   const pendingScrollToUserRef = useRef(false);
   const completionScrollAllowedRef = useRef(true);
-  const executeBashRef = useRef<(command: string, excludeFromContext: boolean) => Promise<void> | undefined>(undefined);
+  const executeBashRef = useRef<(command: string, excludeFromContext: boolean, force?: boolean) => Promise<void> | undefined>(undefined);
   const userScrollIntentUntilRef = useRef(0);
   const ignoreProgrammaticScrollUntilRef = useRef(0);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -3024,7 +3024,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const isExcluded = trimmedMessage.startsWith("!!");
       const bashCmd = (isExcluded ? trimmedMessage.slice(2) : trimmedMessage.slice(1)).trim();
       if (!bashCmd) return { status: "rejected" };
-      await executeBashRef.current?.(bashCmd, isExcluded);
+      await executeBashRef.current?.(bashCmd, isExcluded, options.force);
       return { status: "accepted" };
     }
 
@@ -3295,7 +3295,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [addNotice, catchUp, eventCoalescer, ensureEventsConnected, refreshSubagentRoster, clearTerminalReconcileTimer, opts.chatInputRef, snapshotRunEntries]);
 
-  const executeBash = useCallback(async (command: string, excludeFromContext: boolean) => {
+  const executeBash = useCallback(async (command: string, excludeFromContext: boolean, force = false) => {
     if (agentRunningRef.current || bashRunningRef.current || editInFlightRef.current) return;
     const inputText = `${excludeFromContext ? "!!" : "!"}${command}`;
     bashRunningRef.current = true;
@@ -3308,7 +3308,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         type: "bash",
         command,
         excludeFromContext,
-      });
+      }, { force });
       // Same abandonment rule as handleSend: navigating away mid-spawn must
       // not pull the fresh chat into this session's history.
       if (hookAliveRef.current) {

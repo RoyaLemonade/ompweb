@@ -212,6 +212,17 @@ async function runScan(platform: NodeJS.Platform, run: ProcessScanRunner, uid: n
     // No absolute `ps`: report "unknown" (the caller keeps a known owner)
     // rather than resolving some binary from PATH.
     if (!psBin) throw new Error("no absolute ps binary");
+    // Unlike the Windows branch this does not filter by executable name: `ps`
+    // prints the command line as one string with the quoting already lost, so
+    // the image name cannot be recovered reliably (a wrapper `sh -c "omp
+    // --resume …"` or a path with spaces would fail a name test that its omp
+    // child passes). A same-user process whose arguments merely look like
+    // `--resume <id>` (an editor, a shell job, `grep`) can therefore be
+    // reported as the owner. Accepting the extra candidate is the safe side of
+    // the trade-off: a false owner blocks a send with a retryable 409
+    // `session_running_elsewhere` (the chat's "Send anyway (copy)" sets
+    // `force=1`), while a missed owner would let two writers corrupt the same
+    // session file.
     processes = sameUserProcesses(parsePosixProcessList(await run(psBin, ["-eo", "pid=,uid=,args="])), uid);
   }
   // Parse the resume arguments once per process: the snapshot matches one scan

@@ -458,6 +458,23 @@ test("the queue panel shows omp's snapshot on load and follows queue_update, not
   assert.deepEqual(w.latest.queuedMessages, { steering: [], followUp: ["later"] });
 });
 
+test("a 'send anyway' bash message forwards force so a foreign owner accepts the copy", async () => {
+  // The confirmation in ChatInput is the explicit opt-in for `force=1`. A `!`
+  // command took the shell path, which dropped the flag: the POST hit the
+  // ownership gate unforced and came back `session_running_elsewhere` instead of
+  // running the copy the user just confirmed.
+  resetWorld();
+  primeSession("bash-force", [userMsg("u0", "q")]);
+  const w = await mountSession("bash-force");
+  await act(async () => {
+    await w.latest.handleSend("!ls", undefined, { force: true });
+    await sleep(30);
+  });
+  const posts = callsTo("POST", "/api/agent/").filter((call) => call.body?.type === "bash");
+  assert.equal(posts.length, 1, "the shell command reached the agent route");
+  assert.ok(posts[0].url.includes("force=1"), `the confirmed send carries force, got ${posts[0].url}`);
+});
+
 test("a prompt queued behind a running shell command drops the phantom turn and reports it", async () => {
   resetWorld();
   primeSession("bash-queue", [userMsg("u0", "q")]);

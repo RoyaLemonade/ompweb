@@ -212,9 +212,12 @@ export class RpcProcess {
     return !this.exited;
   }
 
-  /** The omp child's OS pid; undefined before spawn resolved or after exit. */
+  /** The omp child's OS pid; undefined before spawn resolved or after exit.
+   *  A retained pid is a hazard: the OS can reuse it while a dispose is still
+   *  in flight, and the ownership scan would then exclude an unrelated omp
+   *  process that happens to hold it. */
   get pid(): number | undefined {
-    return this.child.pid;
+    return this.exited ? undefined : this.child.pid;
   }
 
   get exitDetails(): { code: number | null; signal: NodeJS.Signals | null; stderrTail: string } | null {

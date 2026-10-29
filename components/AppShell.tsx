@@ -1445,6 +1445,10 @@ export function AppShell({ appName }: { appName: string }) {
       // no stored title yet: a title is cosmetic, so this is a silent no-op, not
       // the "HTTP 200" error a missing title used to produce.
       if (!body.title) {
+        // Same guard as the branches below: the reset belongs to this session
+        // only, or it would re-enable the wand of the session now selected and
+        // let a second request start while its own naming is still pending.
+        if (activeSessionIdRef.current !== sessionId) return;
         setAutoNameStatus({ kind: "idle" });
         return;
       }

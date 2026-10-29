@@ -94,7 +94,12 @@ export async function POST(req: Request) {
       // POST /api/agent/[id]; the liveness watchdog alone may dispose the child.
       // The body carries the real session id so a client that posted the prompt
       // directly here can still poll and adopt the run `maybeStarted` announced.
-      if (error instanceof WebRpcError && error.code === "session_slow") {
+      // `ensure_session` is the exception: it only asked for a runtime, so a
+      // timeout there can only be a preset (`set_model`/`set_thinking_level`)
+      // that never dispatched a run. The caller never receives that id
+      // (`ensureNewSession` throws before reading it), so nothing could adopt
+      // the child — destroy it instead of leaving an orphan to the watchdog.
+      if (error instanceof WebRpcError && error.code === "session_slow" && promptCommand.type !== "ensure_session") {
         return NextResponse.json(
           {
             error: error.message,

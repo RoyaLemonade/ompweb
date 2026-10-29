@@ -238,8 +238,15 @@ interface ElsewhereState {
   entries: Map<string, CachedElsewhere>;
   notifier: (() => void) | null;
   timer: NodeJS.Timeout | undefined;
-  /** One refresh in flight at a time; a second caller shares it. */
+  /** One refresh in flight at a time; later callers share its result. */
   refreshing: Promise<ElsewhereSessionInfo[]> | null;
+  /** Candidates that arrived while `refreshing` was in flight; the pass that
+   *  follows it re-detects them. Without this queue a file watcher event that
+   *  landed mid-scan was dropped, and the broadcast carried a map that
+   *  predated the file it was about. */
+  pending: Map<string, ElsewhereCandidate>;
+  /** Options of the callers that queued into `pending` (merged). */
+  pendingOptions: RefreshElsewhereOptions | null;
   /** Registered by `rpc-manager`; see `ElsewhereOwnershipContext`. */
   ownershipContext: ElsewhereOwnershipContext | null;
 }
@@ -254,6 +261,8 @@ function elsewhereState(): ElsewhereState {
     notifier: null,
     timer: undefined,
     refreshing: null,
+    pending: new Map(),
+    pendingOptions: null,
     ownershipContext: null,
   };
   // Next.js compiles every route as its own server bundle, so this module is
@@ -262,6 +271,8 @@ function elsewhereState(): ElsewhereState {
   // is invisible to the other bundles and the registration silently misses.
   // A state object created by an older module version lacks fields added
   // later, so fill them in.
+  state.pending ??= new Map();
+  state.pendingOptions ??= null;
   state.ownershipContext ??= null;
   return state;
 }
@@ -326,6 +337,22 @@ export function setElsewhereOwnershipContext(context: ElsewhereOwnershipContext 
   elsewhereState().ownershipContext = context;
 }
 
+/** Merge the options of two callers queued into the same follow-up pass: the
+ *  first explicit value per field wins, so a queuing caller's own hooks are
+ *  never replaced by a later caller that passed none. */
+function mergeRefreshOptions(
+  current: RefreshElsewhereOptions | null,
+  next: RefreshElsewhereOptions,
+): RefreshElsewhereOptions {
+  if (!current) return next;
+  return {
+    isLocal: current.isLocal ?? next.isLocal,
+    ownCrashed: current.ownCrashed ?? next.ownCrashed,
+    excludePids: current.excludePids ?? next.excludePids,
+    now: current.now ?? next.now,
+  };
+}
+
 /**
  * Re-detect ownership for the given sessions (plus everything already cached)
  * and replace the snapshot. Sessions known to be locally owned are dropped.
@@ -335,7 +362,31 @@ export function refreshElsewhereSessions(
   options: RefreshElsewhereOptions = {},
 ): Promise<ElsewhereSessionInfo[]> {
   const state = elsewhereState();
-  if (state.refreshing) return state.refreshing;
+  if (state.refreshing) {
+    // The active pass snapshotted its own candidates, so these ids cannot make
+    // it. Queue them for the pass that follows instead of dropping them: the
+    // caller broadcasts the returned snapshot, and an answer that predates its
+    // own files would show the wrong owners until the next event.
+    for (const candidate of candidates) {
+      const previous = state.pending.get(candidate.id);
+      state.pending.set(candidate.id, {
+        id: candidate.id,
+        // Keep the newest knowledge per field: a later event without a path
+        // must not erase the file an earlier one resolved.
+        sessionFile: candidate.sessionFile ?? previous?.sessionFile,
+        mtimeMs: candidate.mtimeMs ?? previous?.mtimeMs,
+      });
+    }
+    state.pendingOptions = mergeRefreshOptions(state.pendingOptions, options);
+    return state.refreshing.then(() => {
+      const pending = [...state.pending.values()];
+      if (pending.length === 0) return getElsewhereSessions();
+      const pendingOptions = state.pendingOptions ?? {};
+      state.pending.clear();
+      state.pendingOptions = null;
+      return refreshElsewhereSessions(pending, pendingOptions);
+    });
+  }
   state.refreshing = (async () => {
     const now = options.now?.() ?? Date.now();
     // Per-call values win; the registered context covers callers without any
@@ -492,4 +543,6 @@ export function resetElsewhereSessions(): void {
   clearTimeout(state.timer);
   state.timer = undefined;
   state.refreshing = null;
+  state.pending.clear();
+  state.pendingOptions = null;
 }

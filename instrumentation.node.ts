@@ -111,28 +111,37 @@ export async function register(): Promise<void> {
   // Rejections of fire-and-forget chains are logged and survived: nobody
   // awaited that promise, so every request path is still intact, and killing
   // the server for one would take down every chat it serves — the scheduled
-  // task does not restart a server that dies on its own. The journal always
-  // gets the record; the console copy is rate-limited so a tick that rejects
-  // once a second cannot bury it.
+  // task does not restart a server that dies on its own.
+  // Both sinks are rate-limited per minute: a tick that rejects once a second
+  // would otherwise rotate real crash records out of the 1 MB journal (the size
+  // cap bounds the file, not the write rate) and bury the console. The first
+  // ten records of each window carry the full description; the rest are
+  // reported as one count line with the last one when the window rolls over.
   let rejectionWindowStart = Date.now();
   let rejectionsLogged = 0;
   let rejectionsSuppressed = 0;
+  let lastSuppressedRejection = "";
   process.on("unhandledRejection", (reason) => {
-    appendDiag("rejection", `unhandledRejection ${describe(reason)}`);
     const now = Date.now();
     if (now - rejectionWindowStart >= 60_000) {
       if (rejectionsSuppressed > 0) {
-        console.error(`[omp-web] ${rejectionsSuppressed} further unhandled rejection(s) in the last minute were journaled only.`);
+        const sample = lastSuppressedRejection.slice(0, 300);
+        appendDiag("rejection", `${rejectionsSuppressed} further unhandled rejection(s) in the last minute were not journaled individually (last: ${sample})`);
+        console.error(`[omp-web] ${rejectionsSuppressed} further unhandled rejection(s) in the last minute were not logged individually.`);
       }
       rejectionWindowStart = now;
       rejectionsLogged = 0;
       rejectionsSuppressed = 0;
+      lastSuppressedRejection = "";
     }
+    const text = describe(reason);
     if (rejectionsLogged < 10) {
       rejectionsLogged += 1;
-      console.error(`[omp-web] unhandled rejection (server keeps running): ${describe(reason)}`);
+      appendDiag("rejection", `unhandledRejection ${text}`);
+      console.error(`[omp-web] unhandled rejection (server keeps running): ${text}`);
     } else {
       rejectionsSuppressed += 1;
+      lastSuppressedRejection = text;
     }
   });
   let lastTick = Date.now();

@@ -224,7 +224,13 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
       if (etag) sessionsEtagRef.current = etag;
       const data = await res.json() as { sessions: SessionInfo[]; runningSessionIds?: string[]; runningSessions?: Array<{ id: string; cwd: string }>; elsewhereSessions?: ElsewhereSessionInfo[] };
       setAllSessions(data.sessions);
-      setElsewhereSessions(new Map((data.elsewhereSessions ?? []).map((entry) => [entry.id, entry])));
+      // Same rule as the running set below: once an SSE frame has delivered an
+      // ownership snapshot, the stream owns it. A GET that was already in
+      // flight can be older than that frame, and applying it would drop the
+      // foreign-session badges until the next frame.
+      if (!sseAuthoritativeRef.current) {
+        setElsewhereSessions(new Map((data.elsewhereSessions ?? []).map((entry) => [entry.id, entry])));
+      }
       if (data.runningSessions) {
         for (const rs of data.runningSessions) {
           if (rs.id && rs.cwd) knownRunningCwdsRef.current.set(rs.id, rs.cwd);
@@ -781,7 +787,9 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
   const liveOrElsewhereIds = useMemo(() => {
     if (elsewhereSessions.size === 0) return runningSessionIds;
     const next = new Set(runningSessionIds);
-    for (const id of elsewhereSessions.keys()) next.add(id);
+    for (const [id, info] of elsewhereSessions) {
+      if (info.running) next.add(id);
+    }
     return next;
   }, [runningSessionIds, elsewhereSessions]);
   const projectActivity = useMemo(

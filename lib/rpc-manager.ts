@@ -942,12 +942,16 @@ export class AgentSessionWrapper {
       level: "error",
       message: `The omp process for this session exited unexpectedly (${status})${detail ? `: ${detail}` : "."}`,
     });
-    // Terminal agent_end so a client mid-stream stops spinning immediately
-    // instead of waiting for the reconcile poll.
-    if (this.streaming || this.promptRunning) this.emit({ type: "agent_end", isTerminal: true, messages: [] });
+    // Published before the terminal `agent_end` below: that emit clears
+    // `promptRunning` synchronously, which would skip the exit notice for a
+    // prompt that was dispatched but never started (no `unsettled`, no
+    // `streaming`).
     if (this.streaming || this.promptRunning || this.unsettled) {
       this.publishNotifications({ type: "process_exit", detail: detail || status });
     }
+    // Terminal agent_end so a client mid-stream stops spinning immediately
+    // instead of waiting for the reconcile poll.
+    if (this.streaming || this.promptRunning) this.emit({ type: "agent_end", isTerminal: true, messages: [] });
     this.destroy();
   }
 
@@ -971,8 +975,11 @@ export class AgentSessionWrapper {
     // consumed by waitReady, so this covers runtime frames only).
     this.lastEvidenceAt = Date.now();
     // A frame is also the only proof that the *run* is still reporting: the
-    // stall clock for `silentForMs` starts here, never from a poll answer.
-    this.lastFrameAt = this.lastEvidenceAt;
+    // stall clock for `silentForMs` starts here, never from a poll answer. A
+    // late answer to a timed-out command (`response`) is life, not a run frame:
+    // moving this clock would mask a stream that has been silent for hours, and
+    // `get_state` answers are exactly what a wedged run keeps producing.
+    if (frame.type !== "response") this.lastFrameAt = this.lastEvidenceAt;
     const event = frame.type === "available_commands_update" && Array.isArray(frame.commands)
       ? { ...frame, commands: (frame.commands as RpcAvailableSlashCommand[]).filter((command) => command.name !== SESSION_EDIT_COMMAND) }
       : frame;
@@ -2063,11 +2070,14 @@ export class AgentSessionWrapper {
       level: "error",
       message: "The omp process for this session stopped responding and was stopped; the next message starts it again. The run may have been interrupted.",
     });
-    // Let a client mid-stream stop spinning now, like a process exit would.
-    if (this.streaming || this.promptRunning) this.emit({ type: "agent_end", isTerminal: true, messages: [] });
+    // Notification first: a terminal `agent_end` clears `promptRunning`
+    // synchronously, and the guard below would then skip the exit notice for a
+    // stalled prompt waiting for `agent_start` (no `unsettled`, no `streaming`).
     if (this.streaming || this.promptRunning || this.unsettled) {
       this.publishNotifications({ type: "process_exit", detail: "stalled" });
     }
+    // Let a client mid-stream stop spinning now, like a process exit would.
+    if (this.streaming || this.promptRunning) this.emit({ type: "agent_end", isTerminal: true, messages: [] });
     this.destroy();
     return true;
   }
