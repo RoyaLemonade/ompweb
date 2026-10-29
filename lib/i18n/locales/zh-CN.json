@@ -721,7 +721,6 @@
   "errors.session_not_found": "未找到会话",
   "errors.session_restarting": "该会话正在重启，请稍后重试。",
   "errors.session_slow": "代理正忙，未能及时响应。它仍在运行，请稍后重试。",
-  "errors.session_busy": "此会话中同时运行的命令过多。请稍后重试。",
   "errors.skill_install_failed": "安装失败",
   "errors.skill_not_installed": "未找到已安装的技能",
   "errors.skill_update_unsupported": "此技能无法自动更新",

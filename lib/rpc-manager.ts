@@ -116,6 +116,13 @@ const STALL_DESTROY_MS = readNonNegativeMs("OMP_WEB_STALL_DESTROY_MS", 5 * 60_00
 /** Refuse a new command while this many are already awaiting omp. Requests
  * cannot pin the wrapper (and the child's stdin) without bound. */
 const MAX_PENDING_COMMANDS = 32;
+/** Cancellation must reach the child even at that cap: a full queue is the one
+ * state from which Stop is the only way out, and `abort`/`abort_bash` settle
+ * within their own bounds (UNBOUNDED_PASSTHROUGH_COMMANDS never holds these
+ * slots forever). They still count toward the cap while in flight. */
+const CANCELLATION_COMMANDS = new Set([
+  "abort", "abort_and_restore_queue", "abort_bash", "abort_compaction", "abort_retry",
+]);
 const READY_TIMEOUT_MS = 120_000;
 const MCP_LIST_TIMEOUT_MS = 15_000;
 /** Bounds one request's wait for an answer. It says nothing about the child:
@@ -464,6 +471,10 @@ export class AgentSessionWrapper {
   private lastPromptAt = 0;
   /** This wrapper already announced the current move as a contention copy. */
   private movedByContention = false;
+  /** A `new_session`/`switch_session` frame was sent but its ack has not
+   * arrived. It can still switch the child after the ack times out, so the next
+   * identity change belongs to it and must rekey the registry. */
+  private sessionSwitchPending = false;
   private unsubscribeFrames: (() => void) | null = null;
   private readonly detectNotification = createNotificationDetector();
   /** Agent activity since the last `session_settled`: background work may still run after the turn ended. */
@@ -578,6 +589,15 @@ export class AgentSessionWrapper {
     return this.historyEditInFlight;
   }
 
+  /** A prompt this client sent whose ack timed out may still sit in the child's
+   *  stdin. `isRunning()` drops it after the awaiting-start deadline; the
+   *  disconnect reaper must keep the child until the liveness watchdog's own
+   *  silence bound expires, or a message omp would have executed is lost. */
+  private promptMayStillRun(): boolean {
+    if (!this.promptRunning) return false;
+    return STALL_DESTROY_MS > 0 && Date.now() - this.lastEvidenceAt < STALL_DESTROY_MS;
+  }
+
   /** A web UI (SSE stream) is currently attached to this session. */
   hasSubscribers(): boolean {
     return this.listeners.length > 0;
@@ -618,6 +638,11 @@ export class AgentSessionWrapper {
    *    half-open (the route holds its own detach + heartbeat), so the run would
    *    vanish silently and the tab would only notice via a later 409;
    *  - isRunning() covers an in-flight turn that no listener is watching;
+   *  - an unacknowledged prompt covers the frame that may already sit in the
+   *    child's stdin: `isRunning()` stops counting it after the awaiting-start
+   *    deadline, but destroying the child inside the larger stall window would
+   *    drop a message omp may still execute. `STALL_DESTROY_MS` bounds this, so
+   *    a wedged child is still reaped;
    *  - handshaking covers a spawn that has not finished its startup handshake;
    *  - pendingCommands covers a route command (predict_word, mcp list, export)
    *    whose response the child still owes us;
@@ -626,7 +651,7 @@ export class AgentSessionWrapper {
    */
   private reapIfDisconnected(): void {
     if (!this.isAlive() || this.hasSubscribers() || this.isRunning()
-      || this.handshaking || this.pendingCommands > 0) {
+      || this.promptMayStillRun() || this.handshaking || this.pendingCommands > 0) {
       // A paused human dialog produces no frames. Do not spin a zero-delay
       // timer once the old deadline has passed while protected work remains.
       this.reapDeadline = Math.max(this.reapDeadline, Date.now() + this.disconnectDestroyMs);
@@ -759,6 +784,14 @@ export class AgentSessionWrapper {
         this.onIdentityChangeCallback?.(oldId, this._sessionId, { keepOldId: true });
         this.invalidateSessionLists();
       }
+    } else if (identityChanged && this.sessionSwitchPending) {
+      // The switch frame reached the child after its ack had timed out, and this
+      // state read is the first evidence. Rekey now, exactly as
+      // refreshIdentityAfterSessionChange would have: the old id must stop
+      // routing to the conversation this child now serves.
+      this.sessionSwitchPending = false;
+      this.onIdentityChangeCallback?.(oldId, this._sessionId);
+      this.invalidateSessionLists();
     }
   }
 
@@ -1767,6 +1800,10 @@ export class AgentSessionWrapper {
    * session file — re-read identity and re-register in the registry. */
   private async refreshIdentityAfterSessionChange(): Promise<string> {
     const oldId = this._sessionId;
+    // This path notifies below for the change it was called for; clear the
+    // pending switch before the await so a concurrent state read cannot also
+    // treat it as a late completion.
+    this.sessionSwitchPending = false;
     const state = await this.getStateWithTimeout();
     this.applyIdentity(state);
     if (oldId && oldId !== this._sessionId) {
@@ -2039,10 +2076,13 @@ export class AgentSessionWrapper {
     if (this.restarting) throw new WebRpcError(RESTARTING_MESSAGE, "session_restarting");
     if (this.mcpListInFlight) throw new WebRpcError("MCP management is in progress. Try again when it finishes.", "session_busy");
     if (!this.isAlive()) throw new Error("Session is no longer running");
-    if (this.pendingCommands >= MAX_PENDING_COMMANDS) {
+    // Stop must always reach the child: at the cap every other command is
+    // refused, and refusing an abort would leave the user with no way out.
+    const isCancellation = CANCELLATION_COMMANDS.has(command.type as string);
+    if (!isCancellation && this.pendingCommands >= MAX_PENDING_COMMANDS) {
       throw new WebRpcError("Too many commands are in flight for this session", "session_busy");
     }
-    if (typeof command.type === "string" && command.type.startsWith("abort")) {
+    if (isCancellation) {
       console.info("[omp-web] cancellation-command", JSON.stringify({ sessionId: this._sessionId, type: command.type, at: new Date().toISOString() }));
     }
     const mutatesHistory = HISTORY_MUTATING_COMMANDS.has(command.type as string);
@@ -2286,12 +2326,25 @@ export class AgentSessionWrapper {
       case "switch_session": {
         // Switching writes a session file before answering, so it gets the
         // generous prompt-ack bound instead of the 5 s poll bound — but it is
-        // still bounded: a wedged child must not pin the request forever.
-        const result = await this.sendControl<{ cancelled: boolean }>(command as { type: string }, PROMPT_ACK_TIMEOUT_MS);
+        // still bounded: a wedged child must not pin the request forever. The
+        // frame can still switch the child after that bound expires, so the
+        // switch stays pending and the identity a later state read reports is
+        // rekeyed then (see applyIdentity).
+        this.sessionSwitchPending = true;
+        let result: { cancelled: boolean };
+        try {
+          result = await this.sendControl<{ cancelled: boolean }>(command as { type: string }, PROMPT_ACK_TIMEOUT_MS);
+        } catch (error) {
+          // A timeout leaves the frame in the child's stdin, so the switch may
+          // still happen; anything else never reached it.
+          if (!(error instanceof WebRpcError && error.code === SESSION_SLOW_CODE)) this.sessionSwitchPending = false;
+          throw error;
+        }
         if (!result.cancelled) {
           const newSessionId = await this.refreshIdentityAfterSessionChange();
           return { cancelled: false, newSessionId };
         }
+        this.sessionSwitchPending = false;
         return result;
       }
 

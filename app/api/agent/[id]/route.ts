@@ -207,7 +207,9 @@ export async function GET(
           code: "session_slow",
           ...error.details,
           running: session.isRunning(),
-          alive: true,
+          // The timeout that answers this 503 may just have disposed a stalled
+          // child; the body must not advertise a process that is gone.
+          alive: session.isAlive(),
           silentForMs: session.silentForMs(),
         }, { status: 503 });
       }

@@ -1403,10 +1403,14 @@ test("a busy reconcile poll keeps the run marked and reports how long omp has be
   // omp's event loop is blocked, so the poll answers 503 `session_slow`. That
   // must neither end the run nor hide the frame clock the answer carries —
   // a blocked child produces no other report at all.
-  world.holds.push({
+  // Every poll hits the blocked child (a one-shot hold would let the gauge
+  // sampler see a healthy answer instead), so the answer is re-armed each time.
+  const busyPoll = { status: 503, value: { error: "omp is busy", code: "session_slow", silentForMs: 2 * 60 * 60_000 } };
+  const armBusyPoll = () => world.holds.push({
     match: (method, url) => method === "GET" && url === "/api/agent/s1",
-    produce: async () => ({ status: 503, value: { error: "omp is busy", code: "session_slow", silentForMs: 2 * 60 * 60_000 } }),
+    produce: async () => { armBusyPoll(); return busyPoll; },
   });
+  armBusyPoll();
   await act(async () => {
     window.dispatchEvent(new Event("online"));
     await sleep(60);
@@ -1415,6 +1419,12 @@ test("a busy reconcile poll keeps the run marked and reports how long omp has be
   assert.equal(w.latest.agentRunning, true, "a busy poll must not end the run");
   assert.equal(w.latest.agentSilentMs, 2 * 60 * 60_000, "the busy answer's frame clock reaches the status line");
   assert.deepEqual(w.latest.notices.filter((n) => n.type === "error"), [], "a busy child is not an error");
+
+  // The 2 s gauge sampler hits the same 503 between two reconciles. A sample
+  // that carries no state must not clear the clock the reconcile delivered, or
+  // "silent since" flickers once per sampler tick.
+  await act(async () => { await sleep(2300); });
+  assert.equal(w.latest.agentSilentMs, 2 * 60 * 60_000, "a stateless sample keeps the silence value");
   w.unmount();
 });
 
@@ -1435,7 +1445,17 @@ test("a 503 that reports no run in flight does not mark an idle child as working
   assert.deepEqual(w.latest.messages.map((m) => m.role), ["user", "assistant"], "the transcript still comes from disk");
   assert.equal(w.latest.agentRunning, false, "no run in flight is not a run");
   assert.equal(w.latest.agentSilentMs, null, "an idle child has no run whose silence could be reported");
-  assert.equal(world.esInstances.length, 0, "no observer stream is opened for a session with nothing to observe");
+  assert.equal(world.esInstances.length, 1, "the living child is observed, exactly as on the 200 mount path");
+  assert.equal(world.esInstances[0].channel.sessionId, "s1");
+
+  // The observer is what turns a run another tab starts into this tab's state.
+  await act(async () => {
+    lastEs().open();
+    lastEs().emit({ type: "agent_start" });
+  });
+  await settle();
+  assert.equal(w.latest.agentRunning, true, "a run announced on the observer marks the session");
+  w.unmount();
 });
 
 test("an idle but living child still gets an observer stream on the mount", async () => {

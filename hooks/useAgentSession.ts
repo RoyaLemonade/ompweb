@@ -184,17 +184,20 @@ function readTerminalAgentError(event: AgentEvent): string | null {
  *  can get while the child answers no poll at all. It also carries the
  *  server's run state (`running`): an idle child that is merely loading a big
  *  session answers `session_slow` too, and `running: false` then means there is
- *  no run to keep marked. `null` = not that answer; `running: null` = an older
- *  server that does not report it (see `SLOW_STATE_MAX_ANSWERS`). */
-async function readBusySessionResponse(res: Response): Promise<{ silentForMs: number | null; running: boolean | null } | null> {
+ *  no run to keep marked. `alive` is the child itself: false when the request's
+ *  own timeout disposed a stalled child, so an observer stream must not attach.
+ *  `null` = not that answer; `running`/`alive: null` = an older server that does
+ *  not report it (see `SLOW_STATE_MAX_ANSWERS`). */
+async function readBusySessionResponse(res: Response): Promise<{ silentForMs: number | null; running: boolean | null; alive: boolean | null } | null> {
   if (res.status !== 503) return null;
   try {
-    const body = await res.json() as { code?: unknown; silentForMs?: unknown; running?: unknown };
+    const body = await res.json() as { code?: unknown; silentForMs?: unknown; running?: unknown; alive?: unknown };
     if (body?.code !== "session_slow" && body?.code !== "session_state_timeout") return null;
     const silent = body.silentForMs;
     return {
       silentForMs: typeof silent === "number" && Number.isFinite(silent) && silent >= 0 ? silent : null,
       running: typeof body.running === "boolean" ? body.running : null,
+      alive: typeof body.alive === "boolean" ? body.alive : null,
     };
   } catch {
     return null;
@@ -913,10 +916,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // observer stream attaches (frames are the completion path once omp answers
   // again). `running: false` is the server telling us there is no run at all —
   // an idle child that is only busy loading a large session — and marking it
-  // would show "working" over a chat nobody asked anything. The on-disk
+  // would show "working" over a chat nobody asked anything; its observer still
+  // attaches, exactly like the 200 mount path does for an idle living child (a
+  // run another client starts must stream here). `alive: false` is the child
+  // gone (the same timeout disposed it): nothing to observe. The on-disk
   // transcript is already loaded by the caller either way.
-  const markSessionAliveStateUnknown = useCallback((running: boolean | null) => {
-    if (running === false) return;
+  const markSessionAliveStateUnknown = useCallback((running: boolean | null, alive: boolean | null) => {
+    if (running === false) {
+      if (alive !== false) syncActionsRef.current?.subscribe(false);
+      return;
+    }
     if (!agentRunningRef.current) {
       agentRunningRef.current = true;
       setAgentRunning(true);
@@ -1001,7 +1010,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               || contextRequestSeqRef.current !== requestSeq || promptRunIdRef.current !== requestRun) {
               return null;
             }
-            markSessionAliveStateUnknown(busy.running);
+            markSessionAliveStateUnknown(busy.running, busy.alive);
             setAgentSilentMs(busy.running === false ? null : busy.silentForMs);
             return { context: d.context, agentState: null };
           }
@@ -1945,7 +1954,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           await finishPromptWithoutStream(sid, runId, true);
           return;
         }
-        markSessionAliveStateUnknown(busy.running);
+        markSessionAliveStateUnknown(busy.running, busy.alive);
         setAgentSilentMs(busy.silentForMs);
         if (busy.running === null) {
           // An older server does not report the run state on its 503. Bound
@@ -2138,7 +2147,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           // Same sample carries the server's frame clock: a run omp keeps
           // answering for while it emits nothing is a silent run, and the
           // status line says since when instead of a bare "Thinking…".
-          const silentForMs = data?.state?.silentForMs;
+          // A 503 carries no state at all — keep the value the reconcile poll
+          // set rather than clearing it between two of its answers.
+          if (!data) return;
+          const silentForMs = data.state?.silentForMs;
           setAgentSilentMs(typeof silentForMs === "number" && Number.isFinite(silentForMs) && silentForMs >= 0 ? silentForMs : null);
         })
         .catch(() => {});
@@ -4111,8 +4123,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       console.error("Failed to steer:", e);
       // The frame may already be in omp's stdin (see handleSend): the message
       // may still be delivered, so do not claim it failed nor hand the text back.
+      // No run marker here: a steer does not start the run, and the marker
+      // classifies how *this turn* ends (see `finishPromptWithoutStream`).
       if (e instanceof AgentCommandError && e.code === "session_slow" && e.maybeStarted) {
-        maybeStartedRunRef.current = true;
         addNotice({ type: "warning", message: translate("agentSession.maybeStarted") });
         return true;
       }
@@ -4165,8 +4178,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       return true;
     } catch (e) {
       console.error("Failed to follow up:", e);
+      // Delivered or not, this frame does not start the turn: the run-wide
+      // maybe-started marker would replace the turn's own `responseFailed`
+      // report, so it stays with the prompt acks (see handleSend).
       if (e instanceof AgentCommandError && e.code === "session_slow" && e.maybeStarted) {
-        maybeStartedRunRef.current = true;
         addNotice({ type: "warning", message: translate("agentSession.maybeStarted") });
         return true;
       }
