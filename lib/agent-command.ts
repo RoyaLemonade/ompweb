@@ -21,6 +21,19 @@ export const NO_SPAWN_REPLIES: Record<string, unknown> = {
   btw_cancel: { cancelled: false },
 };
 
+/** The refusal for a command that may only ride a live child, or undefined when
+ * the command may start one. `goal` reads the state a running child holds: a
+ * native client inspecting goal mode must not resume a full omp child (MCP,
+ * LSP) for it, and a saved session's goal is not read off disk here. The
+ * mutating ops (`create`, `pause`, `resume`, `drop`) keep their start
+ * semantics — they are what a client uses to set a goal on an idle session. */
+function liveOnlyRefusal(type: string, command: Record<string, unknown>): { error: string; code: string } | undefined {
+  if (type === "goal" && command.op === "get") {
+    return { error: "Goal state requires a running session", code: "goal_state_unavailable" };
+  }
+  return undefined;
+}
+
 /** omp-web's own failures carry a stable code the client can localize; omp's
  * errors stay opaque English text. */
 export function commandErrorResponse(error: unknown): Response {
@@ -112,8 +125,9 @@ export async function runAgentCommand(id: string, body: unknown, advisor: boolea
     let resumeId = id;
     let resumeHost: AgentSessionWrapper["host"] | undefined;
     const noSpawn = Object.hasOwn(NO_SPAWN_REPLIES, type);
+    const liveOnly = liveOnlyRefusal(type, command);
     if (existing?.isAlive()) {
-      if (noSpawn || (existing.adopted && !existing.hostOwnedLifecycle)
+      if (noSpawn || liveOnly || (existing.adopted && !existing.hostOwnedLifecycle)
         || existing.advisorSpawned === (advisor === true || existing.launchAdvisor === true) || existing.isRunning() || existing.isEditingHistory()) {
         const result = await send(existing);
         return Response.json({ success: true, data: result });
@@ -126,6 +140,9 @@ export async function runAgentCommand(id: string, body: unknown, advisor: boolea
       if (!existing.hostOwnedLifecycle) await existing.destroyAndWait("advisor", true);
     }
     if (noSpawn) return Response.json({ success: true, data: NO_SPAWN_REPLIES[type] });
+    if (liveOnly) {
+      return Response.json({ error: liveOnly.error, code: liveOnly.code }, { status: 409 });
+    }
 
     const resolved = resumeHost ? { host: resumeHost } : await resolveSessionHostOr404(resumeId);
     if ("response" in resolved) return resolved.response;
