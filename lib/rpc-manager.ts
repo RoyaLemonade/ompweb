@@ -33,6 +33,7 @@ import { publishNotification } from "./notification-hub";
 import { eventWithToolResultImageUrls } from "./media-cache";
 import type {
   BashResultInfo,
+  GoalCommandReply,
   OmpModel,
   RpcAvailableSlashCommand,
   RpcSessionState,
@@ -3014,6 +3015,16 @@ export class AgentSessionWrapper {
         if (typeof command.id === "string") this.pendingHostUris.delete(command.id);
         this.proc.sendFrame(command as { type: string; [key: string]: unknown });
         return null;
+      }
+
+      // Goal mode: `{type:"goal", op}` is omp's own RPC frame, forwarded
+      // verbatim. Every op answers `{goal, state}` — `goal` the record the op
+      // acted on, `state` the mode snapshot around it, both `null` once no goal
+      // is set (omp answers that after `drop`). Typed here because this is the
+      // only place omp-web sees the reply shape.
+      case "goal": {
+        const reply: GoalCommandReply = await this.sendNativeMessageCommand<GoalCommandReply>(command as { type: string }, undefined, command);
+        return reply;
       }
 
       default: {

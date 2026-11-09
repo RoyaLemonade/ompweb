@@ -21,17 +21,26 @@ export const NO_SPAWN_REPLIES: Record<string, unknown> = {
   btw_cancel: { cancelled: false },
 };
 
+/** The goal ops that may start a child: they are how a client sets, holds or
+ * clears a goal on a session that is not running. Everything else (`get`, a
+ * missing op, a typo, a non-string op) only reads state a live child holds, and
+ * omp rejects an unknown op (`Unknown goal op: undefined`) — spawning a full
+ * child (MCP, LSP) just to relay that rejection is not what the caller asked
+ * for. The `typeof` check is load-bearing: a property lookup coerces its key,
+ * so `op: ["create"]` would otherwise read as the start op `create`. */
+const GOAL_START_OPS: Record<string, true> = { create: true, pause: true, resume: true, drop: true };
+
 /** The refusal for a command that may only ride a live child, or undefined when
  * the command may start one. `goal` reads the state a running child holds: a
  * native client inspecting goal mode must not resume a full omp child (MCP,
- * LSP) for it, and a saved session's goal is not read off disk here. The
+ * LSP) for it, and a saved session's goal is not read off disk here. Only the
  * mutating ops (`create`, `pause`, `resume`, `drop`) keep their start
  * semantics — they are what a client uses to set a goal on an idle session. */
 function liveOnlyRefusal(type: string, command: Record<string, unknown>): { error: string; code: string } | undefined {
-  if (type === "goal" && command.op === "get") {
-    return { error: "Goal state requires a running session", code: "goal_state_unavailable" };
-  }
-  return undefined;
+  if (type !== "goal") return undefined;
+  const op = command.op;
+  if (typeof op === "string" && Object.hasOwn(GOAL_START_OPS, op)) return undefined;
+  return { error: "Goal state requires a running session", code: "goal_state_unavailable" };
 }
 
 /** omp-web's own failures carry a stable code the client can localize; omp's
