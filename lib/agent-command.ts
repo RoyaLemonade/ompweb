@@ -8,6 +8,7 @@ import { runOutboxCommand } from "@/lib/message-outbox";
 import { readClientMessageIds } from "@/lib/client-message-ids";
 import { reconcileOutboxHandoffs } from "@/lib/outbox-handoff";
 import type { MessageOrigin } from "@/lib/message-origin";
+import { GOAL_HISTORY_MUTATING_OPS } from "@/lib/hosts/link-protocol";
 
 // Commands that ride whatever child is alive and never spawn or replace one:
 // keystroke predictions, and the side-question reads/cancel omp-web sends in
@@ -21,25 +22,21 @@ export const NO_SPAWN_REPLIES: Record<string, unknown> = {
   btw_cancel: { cancelled: false },
 };
 
-/** The goal ops that may start a child: they are how a client sets, holds or
- * clears a goal on a session that is not running. Everything else (`get`, a
- * missing op, a typo, a non-string op) only reads state a live child holds, and
- * omp rejects an unknown op (`Unknown goal op: undefined`) — spawning a full
- * child (MCP, LSP) just to relay that rejection is not what the caller asked
- * for. The `typeof` check is load-bearing: a property lookup coerces its key,
- * so `op: ["create"]` would otherwise read as the start op `create`. */
-const GOAL_START_OPS: Record<string, true> = { create: true, pause: true, resume: true, drop: true };
-
 /** The refusal for a command that may only ride a live child, or undefined when
  * the command may start one. `goal` reads the state a running child holds: a
  * native client inspecting goal mode must not resume a full omp child (MCP,
  * LSP) for it, and a saved session's goal is not read off disk here. Only the
- * mutating ops (`create`, `pause`, `resume`, `drop`) keep their start
- * semantics — they are what a client uses to set a goal on an idle session. */
+ * history-mutating ops (`create`, `pause`, `resume`, `drop`) keep their start
+ * semantics — they are what a client uses to set a goal on an idle session;
+ * `get`, a missing op, a typo and a non-string op only read state a live child
+ * holds, and omp rejects an unknown op (`Unknown goal op: undefined`), so
+ * spawning a full child just to relay that rejection is not what the caller
+ * asked for. The `typeof` check is load-bearing: the table lookup coerces its
+ * key, so `op: ["create"]` would otherwise read as the start op `create`. */
 function liveOnlyRefusal(type: string, command: Record<string, unknown>): { error: string; code: string } | undefined {
   if (type !== "goal") return undefined;
   const op = command.op;
-  if (typeof op === "string" && Object.hasOwn(GOAL_START_OPS, op)) return undefined;
+  if (typeof op === "string" && Object.hasOwn(GOAL_HISTORY_MUTATING_OPS, op)) return undefined;
   return { error: "Goal state requires a running session", code: "goal_state_unavailable" };
 }
 

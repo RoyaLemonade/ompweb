@@ -378,10 +378,16 @@ The table is static imports, not a runtime glob, so `bun build --compile` (`scri
   the same mode snapshot as its `goal` field (`GoalModeState`: `{enabled, mode,
   goal}`, `null` after a drop, absent on an omp that predates goal mode, which is
   never invented here). Only the mutating ops (`create`, `pause`, `resume`,
-  `drop`) may start a child; every other op — `get`, a missing op or a typo — is
-  live-only (`liveOnlyRefusal` in `lib/agent-command.ts`): with no live wrapper it
-  answers 409 `goal_state_unavailable` instead of resuming a full omp child, and a
-  live idle child is never replaced for it.
+  `drop`) may start a child; every other op — `get`, a missing op, a typo or a
+  non-string op (a bare property lookup would coerce `["create"]`) — is live-only
+  (`liveOnlyRefusal` in `lib/agent-command.ts`): with no live wrapper it answers
+  409 `goal_state_unavailable` instead of resuming a full omp child, and a live
+  idle child is never replaced for it.
+  Those same four ops are history mutations for the edit fence
+  (`isHistoryMutatingCommand` in `lib/hosts/link-protocol.ts`): a `goal` write is
+  refused while an Edit owns the wrapper, blocks a new Edit while it is in
+  flight, and is refused by the daemon for a peer while another server holds the
+  edit lease. `get` stays a read that an Edit does not fence.
   `mode` stays `active` for a paused goal too; `enabled` is the field that says
   whether it runs. The web composer's `/goal` slash command is a client-side
   prompt expansion, not this transport.
@@ -424,7 +430,8 @@ The table is static imports, not a runtime glob, so `bun build --compile` (`scri
   `omp_version` reports omp found after a hello that said none (the daemon retries the runner fetch and the read, 30 s doubling to 5 min);
   one link is the automatic notification publisher.
   Cross-server fences live in the daemon: a history edit takes the acknowledged
-  `editLease` op before preflight, and a `peer_message_command` marker makes another server's identical echo
+  `editLease` op before preflight (peer `goal` writes are classified by their
+  `op`, so `get` is not fenced), and a `peer_message_command` marker makes another server's identical echo
   ambiguous (`watchReplacement`). An open's preparation lease passes only to the
   command that asked for it (`withPendingCommand(run, true)`); a command timeout
   that recycles the child stops the shared process (`destroyAndWait(reason, true)`).
