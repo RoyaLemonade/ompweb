@@ -1,7 +1,7 @@
 import "../tests/setup-dom.mjs";
 import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
-const { act, cleanup, fireEvent, render, screen } = await import("@testing-library/react/pure.js");
+const { act, cleanup, fireEvent, render, screen, within } = await import("@testing-library/react/pure.js");
 const { createElement } = await import("react");
 
 const { UsageConfig, STALE_POLL_MS } = await import("./UsageConfig.tsx");
@@ -136,7 +136,15 @@ test("a slow earlier answer cannot overwrite a newer report", async (t) => {
   await act(async () => refresh.click());
   await act(async () => {});
   // The slow refresh is still pending; a different query answers meanwhile.
-  await act(async () => fireEvent.change(screen.getByLabelText("Time range"), { target: { value: "7d" } }));
+  // The range picker is a ThemedSelect (main replaced the native select with a
+  // Base UI listbox), so choose the option the way SettingsConfig's tests do.
+  // No waitFor here: this test mocks setTimeout, so waiting would never tick.
+  await act(async () => fireEvent.click(screen.getByLabelText("Time range")));
+  const sevenDays = within(document.body).getByRole("option", { name: "Last 7 days", exact: true });
+  await act(async () => {
+    fireEvent.pointerDown(sevenDays, { pointerType: "mouse" });
+    fireEvent.click(sevenDays);
+  });
   await act(async () => {});
   assert.equal(recordsShown(), 44, "the newer query's report is on screen");
 
